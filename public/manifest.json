@@ -1,0 +1,14 @@
+{
+  "name": "Mapa Institucional UNEMI",
+  "short_name": "Mapa UNEMI",
+  "description": "Navegación dentro del campus UNEMI con guía paso a paso.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FF7A1A",
+  "theme_color": "#FF7A1A",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
