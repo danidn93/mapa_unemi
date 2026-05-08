@@ -14,49 +14,99 @@ import { SignUpModal } from "@/components/modals/SignUpModal";
 import { requestPushOnLogin } from "@/lib/push";
 import loginBg from "@/assets/login-bg.jpg";
 
-async function routeByRole(userId: string, nav: (p: string) => void) {
+async function routeByRole(
+  userId: string,
+  nav: ReturnType<typeof useNavigate>
+) {
   try {
-    const { data } = await db.rpc("get_user_effective_role", { _user_id: userId });
+    const { data, error } = await db.rpc("get_user_effective_role", {
+      _user_id: userId,
+    });
+
+    if (error) throw error;
+
     const role = (data as string) ?? "public";
-    if (["admin", "operator", "superadmin"].includes(role)) nav("/admin");
-    else nav("/");
-  } catch {
-    nav("/");
+
+    if (["admin", "superadmin"].includes(role)) {
+      nav("/admin", { replace: true });
+      return;
+    }
+
+    nav("/", { replace: true });
+  } catch (error) {
+    console.error("routeByRole error:", error);
+    nav("/", { replace: true });
   }
 }
 
 export default function Auth() {
   const nav = useNavigate();
   const { toast } = useToast();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+
   const [loading, setLoading] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
+
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [showSignUp, setShowSignUp] = useState(false);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) {
-        requestPushOnLogin().catch(() => {});
-        routeByRole(data.session.user.id, nav);
+    let mounted = true;
+
+    const validateCurrentSession = async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+
+        if (!mounted) return;
+
+        if (data.session?.user) {
+          requestPushOnLogin().catch(() => {});
+          await routeByRole(data.session.user.id, nav);
+        }
+      } catch (error) {
+        console.error("getSession error:", error);
+      } finally {
+        if (mounted) setCheckingSession(false);
       }
-    });
+    };
+
+    validateCurrentSession();
+
+    return () => {
+      mounted = false;
+    };
   }, [nav]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+
     if (!email || !password) {
-      toast({ title: "Error", description: "Ingresa tu correo y contraseña", variant: "destructive" });
+      toast({
+        title: "Error",
+        description: "Ingresa tu correo y contraseña",
+        variant: "destructive",
+      });
       return;
     }
+
     setLoading(true);
+
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
       if (error) throw error;
-      if (data.user) {
-        requestPushOnLogin().catch(() => {});
-        await routeByRole(data.user.id, nav);
+
+      if (!data.user) {
+        throw new Error("No se pudo obtener el usuario autenticado.");
       }
+
+      requestPushOnLogin().catch(() => {});
+      await routeByRole(data.user.id, nav);
     } catch (err: any) {
       toast({
         title: "Error de autenticación",
@@ -68,18 +118,24 @@ export default function Auth() {
     }
   };
 
+  if (checkingSession) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <p className="text-sm text-muted-foreground">Validando sesión...</p>
+      </div>
+    );
+  }
+
   return (
     <div className="relative min-h-screen w-full overflow-hidden">
-      {/* Background image */}
       <div
         className="absolute inset-0 bg-cover bg-center"
         style={{ backgroundImage: `url(${loginBg})` }}
         aria-hidden="true"
       />
-      {/* Overlay */}
+
       <div className="absolute inset-0 bg-gradient-to-br from-background/85 via-background/70 to-primary/40 backdrop-blur-sm" />
 
-      {/* Content */}
       <div className="relative z-10 flex min-h-screen items-center justify-center p-4">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -87,10 +143,11 @@ export default function Auth() {
           transition={{ duration: 0.5 }}
           className="w-full max-w-md"
         >
-          {/* Logo */}
           <div className="mb-8 flex flex-col items-center text-center">
             <TigrilloGuide size={96} />
-            <h1 className="mt-4 text-3xl font-bold tracking-tight text-foreground">Mapa UNEMI</h1>
+            <h1 className="mt-4 text-3xl font-bold tracking-tight text-foreground">
+              Mapa UNEMI
+            </h1>
             <p className="mt-1 text-sm text-muted-foreground">
               Sistema de Navegación del Campus Universitario
             </p>
@@ -112,6 +169,7 @@ export default function Auth() {
                     required
                   />
                 </div>
+
                 <div className="space-y-2">
                   <Label htmlFor="password">Contraseña</Label>
                   <Input
@@ -141,7 +199,10 @@ export default function Auth() {
               </form>
 
               <div className="mt-6 border-t border-border/60 pt-4 text-center">
-                <p className="text-sm text-muted-foreground">¿No tienes cuenta?</p>
+                <p className="text-sm text-muted-foreground">
+                  ¿No tienes cuenta?
+                </p>
+
                 <Button
                   type="button"
                   variant="outline"
@@ -156,8 +217,15 @@ export default function Auth() {
         </motion.div>
       </div>
 
-      <ForgotPasswordModal open={showForgotPassword} onClose={() => setShowForgotPassword(false)} />
-      <SignUpModal open={showSignUp} onClose={() => setShowSignUp(false)} />
+      <ForgotPasswordModal
+        open={showForgotPassword}
+        onClose={() => setShowForgotPassword(false)}
+      />
+
+      <SignUpModal
+        open={showSignUp}
+        onClose={() => setShowSignUp(false)}
+      />
     </div>
   );
 }

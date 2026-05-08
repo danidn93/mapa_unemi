@@ -16,7 +16,7 @@ import { useStreetApproach } from "@/hooks/useStreetApproach";
 import { haversine, UNEMI_CENTER } from "@/lib/geo";
 import { speak, stopSpeaking, primeSpeech } from "@/lib/voice";
 import type { AccessMode, ArrivalGuide, LatLng, MapBuilding, MapRoom, RouteResult } from "@/types/map";
-import { LogIn, MapPin, LayoutDashboard, Share2, Download, Search } from "lucide-react";
+import { LogIn, MapPin, LayoutDashboard, Share2, Download, Search, School } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 
@@ -100,27 +100,65 @@ export default function Index() {
 
   const [role, setRole] = useState<string>("public");
 
-  const loadRole = async (userId: string | undefined) => {
-    if (!userId) { setRole("public"); return; }
+  const [profile, setProfile] = useState<{
+    id: string;
+    cedula: string;
+    user_type: string;
+  } | null>(null);
+
+  const [loadingClassRoute, setLoadingClassRoute] = useState(false);
+
+  const [classRouteMessage, setClassRouteMessage] = useState<{
+    type: "warning" | "error";
+    title: string;
+    description: string;
+  } | null>(null);
+
+  const loadUserProfile = async (userId: string | undefined) => {
+    if (!userId) {
+      setRole("public");
+      setProfile(null);
+      return;
+    }
+
     try {
-      const { data } = await (supabase as any).rpc("get_user_effective_role", { _user_id: userId });
-      setRole((data as string) ?? "public");
-    } catch { setRole("public"); }
+      const { data: roleData } = await (supabase as any).rpc("get_user_effective_role", {
+        _user_id: userId,
+      });
+
+      setRole((roleData as string) ?? "public");
+
+      const { data: profileData, error: profileError } = await supabase
+        .from("profiles")
+        .select("id, cedula, user_type")
+        .eq("id", userId)
+        .maybeSingle();
+
+      if (profileError) throw profileError;
+
+      setProfile(profileData ?? null);
+    } catch {
+      setRole("public");
+      setProfile(null);
+    }
   };
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setHasSession(!!data.session);
-      loadRole(data.session?.user.id);
+      loadUserProfile(data.session?.user.id);
     });
+
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
       setHasSession(!!s);
-      loadRole(s?.user.id);
+      loadUserProfile(s?.user.id);
     });
     return () => sub.subscription.unsubscribe();
   }, []);
 
   const canAccessAdmin = ["admin", "operator", "superadmin"].includes(role);
+
+  const isStudent = profile?.user_type === "estudiante";
 
   // Para el público, ocultamos lo no operativo (cerrado / mantenimiento) tanto en mapa como en routing.
   const isOp = (s?: string | null) => !s || s === "active";
@@ -369,6 +407,107 @@ export default function Index() {
   const previewDestinationCode =
     destination?.code ?? destBuilding?.code ?? null;
 
+  const goToMyClass = async () => {
+    if (!profile?.cedula) {
+      toast({
+        title: "No se encontró tu cédula",
+        description: "Tu perfil no tiene un número de documento registrado.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      setLoadingClassRoute(true);
+
+      setClassRouteMessage(null);
+
+      const documento = String(profile.cedula).replace(/\D/g, "");
+
+      const res = await fetch("https://sga.unemi.edu.ec/api/1.0/services/emergency_button/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ documento }),
+      });
+
+      if (!res.ok) {
+        throw new Error("No se pudo consultar el aula asignada.");
+      }
+
+      const data = await res.json();
+
+      if (!data?.isSuccess) {
+        throw new Error(data?.message || "No se encontró información académica.");
+      }
+
+      const aula = String(data?.aData?.aula ?? "").trim();
+
+      if (!aula || aula.toUpperCase() === "INDETERMINADO") {
+        setClassRouteMessage({
+          type: "warning",
+          title: "Aula no determinada",
+          description: "El sistema académico no devolvió un aula específica para tu clase actual.",
+        });
+        return;
+      }
+
+      const normalize = (value: string | null | undefined) =>
+        String(value ?? "")
+          .trim()
+          .toLowerCase()
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ");
+
+      const aulaNorm = normalize(aula);
+
+      const room = rooms.find((r) => {
+        const name = normalize(r.name);
+        const code = normalize(r.code);
+        const keywords = Array.isArray(r.keywords)
+          ? r.keywords.map((k) => normalize(String(k))).join(" ")
+          : normalize(String(r.keywords ?? ""));
+
+        return (
+          name === aulaNorm ||
+          code === aulaNorm ||
+          name.includes(aulaNorm) ||
+          aulaNorm.includes(name) ||
+          code.includes(aulaNorm) ||
+          keywords.includes(aulaNorm)
+        );
+      });
+
+      if (!room) {
+        setClassRouteMessage({
+          type: "warning",
+          title: "Aula no encontrada en el mapa",
+          description: `El SGA devolvió "${aula}", pero no existe una room equivalente en el mapa institucional.`,
+        });
+        return;
+      }
+
+      setClassRouteMessage(null);
+
+      handleSelectRoom(room);
+
+      toast({
+        title: "🎓 Ruta a tu clase",
+        description: `Aula asignada: ${aula}`,
+      });
+    } catch (e) {
+      setClassRouteMessage({
+        type: "error",
+        title: "No se pudo obtener tu clase",
+        description: e instanceof Error ? e.message : "Ocurrió un error inesperado.",
+      });
+    } finally {
+      setLoadingClassRoute(false);
+    }
+  };
+
   return (
     <div className="relative h-screen w-full overflow-hidden">
       <GoogleCampusMap
@@ -433,6 +572,29 @@ export default function Index() {
                 <Share2 className="h-4 w-4" /> Compartir
               </Button>
 
+              {hasSession && isStudent && (
+                <Button
+                  variant="default"
+                  size="sm"
+                  className="rounded-full shadow-[var(--shadow-card)] gap-1"
+                  onClick={goToMyClass}
+                  disabled={loadingClassRoute || loading}
+                  title="Ir a mi clase"
+                >
+                  {loadingClassRoute ? (
+                    <>
+                      <Search className="h-4 w-4 animate-spin" />
+                      Buscando aula
+                    </>
+                  ) : (
+                    <>
+                      <School className="h-4 w-4" />
+                      Ir a mi clase
+                    </>
+                  )}
+                </Button>
+              )}
+
               {installPrompt && (
                 <Button variant="default" size="sm" className="rounded-full shadow-[var(--shadow-card)] gap-1"
                   onClick={installApp}>
@@ -462,6 +624,36 @@ export default function Index() {
                 </Button>
               )}
             </div>
+
+            {classRouteMessage && (
+              <div
+                className={[
+                  "mb-3 rounded-2xl border p-3 shadow-[var(--shadow-card)] backdrop-blur bg-card/95",
+                  classRouteMessage.type === "error"
+                    ? "border-destructive/40 text-destructive"
+                    : "border-amber-300 text-amber-800",
+                ].join(" ")}
+              >
+                <div className="flex items-start gap-2">
+                  <div className="mt-0.5 text-lg">
+                    {classRouteMessage.type === "error" ? "❌" : "⚠️"}
+                  </div>
+
+                  <div className="flex-1">
+                    <p className="text-sm font-bold">{classRouteMessage.title}</p>
+                    <p className="text-xs opacity-80">{classRouteMessage.description}</p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setClassRouteMessage(null)}
+                    className="rounded-full px-2 py-1 text-xs font-semibold opacity-70 hover:opacity-100"
+                  >
+                    Cerrar
+                  </button>
+                </div>
+              </div>
+            )}
 
             <SearchPanel
               rooms={rooms.filter((r) => visibleBuildings.some((b) => b.id === r.building_id))}
