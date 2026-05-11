@@ -1243,7 +1243,7 @@ function RoomsManager({ buildingId, floors, rooms, onChanged }: {
       setName(""); setCode(""); setDirections(""); setAudience("public");
       toast({ title: "Aula creada" });
       onChanged();
-      if (newId) notifyRoom("creada", newId, nm, cd || null, aud);
+      
     }
   };
   const saveRoom = async () => {
