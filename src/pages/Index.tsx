@@ -432,7 +432,24 @@ export default function Index() {
 
       const documento = String(profile.cedula).replace(/\D/g, "");
 
-      const res = await fetch("https://sga.unemi.edu.ec/api/1.0/services/emergency_button/", {
+      const { data: configData, error: configError } = await supabase
+        .from("config")
+        .select("api_siguiente_hora")
+        .order("id", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      if (configError) {
+        throw new Error("No se pudo cargar la configuración del sistema.");
+      }
+
+      const apiUrl = String(configData?.api_siguiente_hora ?? "").trim();
+
+      if (!apiUrl) {
+        throw new Error("No existe una URL configurada para consultar la siguiente clase.");
+      }
+
+      const res = await fetch(apiUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
