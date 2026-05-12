@@ -168,6 +168,7 @@ export default function Index() {
   );
   const visibleParkings   = useMemo(() => parkings.filter((p) => isOp(p.status)), [parkings]);
   const visibleLandmarks  = useMemo(() => landmarks.filter((l) => l.is_active !== false && isOp(l.status)), [landmarks]);
+  
   const visibleEntrances  = useMemo(() => entrances.filter((e) => isOp(e.status)), [entrances]);
   const visibleCampusEnts = useMemo(() => campusEntrances.filter((c) => c.is_active !== false && isOp(c.status)), [campusEntrances]);
   // Calles cerradas no se muestran al público y no se usan para calcular rutas.
@@ -188,6 +189,13 @@ export default function Index() {
   );
   const origin = routeOriginInfo.origin;
 
+  const sortedVisibleLandmarks = useMemo(() => {
+    return [...visibleLandmarks].sort((a, b) => {
+      const da = haversine(origin, { lat: a.lat, lng: a.lng });
+      const db = haversine(origin, { lat: b.lat, lng: b.lng });
+      return da - db;
+    });
+  }, [visibleLandmarks, origin]);
   // Si el usuario está fuera del campus, ruteamos primero hasta la entrada
   // peatonal o vehicular más cercana (ignorando salidas) y desde ahí al destino.
   const outside = useMemo(
@@ -658,7 +666,7 @@ export default function Index() {
             <SearchPanel
               rooms={rooms.filter((r) => visibleBuildings.some((b) => b.id === r.building_id))}
               buildings={visibleBuildings}
-              landmarks={visibleLandmarks}
+              landmarks={sortedVisibleLandmarks}
               onSelectRoom={handleSelectRoom}
               onSelectBuilding={handleSelectBuilding}
               onSelectLandmark={handleSelectLandmark}
@@ -677,7 +685,7 @@ export default function Index() {
       {/* Vista previa (estilo Google Maps): ruta + ETA + indicaciones + botón Iniciar */}
       {isPreviewing && buildingRoute && (
         <div className="absolute bottom-0 inset-x-0 z-[1000] p-3 sm:p-4 pointer-events-none">
-          <div className="max-w-2xl mx-auto">
+          <div className="max-w-2xl mx-auto max-h-[55vh] overflow-y-auto overscroll-contain pointer-events-auto rounded-3xl">
             <RoutePreview
               destinationName={activeDestinationName}
               destinationCode={previewDestinationCode}
