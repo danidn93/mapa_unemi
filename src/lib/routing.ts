@@ -26,7 +26,7 @@ interface Graph {
 interface BaseSegment {
   a: LatLng;
   b: LatLng;
-  bidirectional: boolean;
+  direction: "both" | "entry" | "exit";
 }
 
 function snapKey(p: LatLng, registry: { key: string; pos: LatLng }[]): string {
@@ -62,7 +62,13 @@ function addSplitPoint(bucket: { point: LatLng; t: number }[], point: LatLng, t:
   bucket.push({ point, t });
 }
 
-function buildGraph(paths: MapPath[], mode: AccessMode): Graph {
+function buildGraph(
+  paths: MapPath[],
+  mode: AccessMode,
+  options?: {
+    allowExitRouting?: boolean;
+  },
+): Graph {
   const adj = new Map<string, Map<string, number>>();
   const nodes: { key: string; pos: LatLng }[] = [];
   const segments: Graph["segments"] = [];
@@ -82,7 +88,13 @@ function buildGraph(paths: MapPath[], mode: AccessMode): Graph {
       vertices.push(v);
       if (i > 0) {
         const a: LatLng = { lng: coords[i - 1][0], lat: coords[i - 1][1] };
-        if (haversine(a, v) > 0.5) baseSegments.push({ a, b: v, bidirectional: p.bidirectional !== false });
+        if (haversine(a, v) > 0.5) {
+          const direction =
+            ((p as any).direction as "both" | "entry" | "exit" | undefined) ??
+            (p.bidirectional !== false ? "both" : "entry");
+
+          baseSegments.push({ a, b: v, direction });
+        }
       }
     }
   }
@@ -123,8 +135,23 @@ function buildGraph(paths: MapPath[], mode: AccessMode): Graph {
       const bKey = snapKey(b, nodes);
       if (aKey === bKey) continue;
       const w = haversine(a, b);
-      add(aKey, bKey, w);
-      if (s.bidirectional) add(bKey, aKey, w);
+      const allowExitRouting = options?.allowExitRouting === true;
+
+      if (allowExitRouting) {
+        // Modo salida: permite recorrer calles de entrada/salida para alcanzar una salida válida.
+        add(aKey, bKey, w);
+        add(bKey, aKey, w);
+      } else if (s.direction === "both") {
+        add(aKey, bKey, w);
+        add(bKey, aKey, w);
+      } else if (s.direction === "entry") {
+        // Entrada respeta el sentido dibujado A → B.
+        add(aKey, bKey, w);
+      } else if (s.direction === "exit") {
+        // Salida usa el sentido contrario B → A.
+        add(bKey, aKey, w);
+      }
+
       segments.push({ a, b, aKey, bKey });
     }
   }
@@ -211,10 +238,13 @@ export function computeRoute(
   destination: LatLng,
   mode: AccessMode,
   buildings: MapBuilding[] = [],
+  options?: {
+    allowExitRouting?: boolean;
+  },
 ): RouteResult {
   // Excluir calles no transitables (cerradas o cerradas temporalmente).
   const usable = paths.filter((p) => p.status !== "closed" && p.status !== "temporary_closed");
-  const graph = buildGraph(usable, mode);
+  const graph = buildGraph(usable, mode, options);
 
   if (graph.segments.length === 0) {
     return unavailableStreetRoute(origin, mode);

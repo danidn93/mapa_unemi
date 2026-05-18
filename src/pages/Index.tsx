@@ -22,6 +22,39 @@ import { toast } from "@/hooks/use-toast";
 
 const ARRIVAL_THRESHOLD_M = 25;
 
+function bearingBetween(a: LatLng, b: LatLng) {
+  const toRad = (v: number) => (v * Math.PI) / 180;
+  const toDeg = (v: number) => (v * 180) / Math.PI;
+
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const lngDiff = toRad(b.lng - a.lng);
+
+  const y = Math.sin(lngDiff) * Math.cos(lat2);
+  const x =
+    Math.cos(lat1) * Math.sin(lat2) -
+    Math.sin(lat1) * Math.cos(lat2) * Math.cos(lngDiff);
+
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+function nearestPointOnRoute(user: LatLng | null, route: RouteResult | null): LatLng | null {
+  if (!user || !route?.coords?.length) return user;
+
+  let nearest = route.coords[0];
+  let best = Infinity;
+
+  for (const p of route.coords) {
+    const d = haversine(user, p);
+    if (d < best) {
+      best = d;
+      nearest = p;
+    }
+  }
+
+  return best <= 18 ? nearest : user;
+}
+
 export default function Index() {
   const { buildings, floors, rooms, entrances, campusEntrances, paths, parkings, landmarks, loading, error } = useMapData();
   const { position, accuracy, heading, error: gpsError, needsCompassPermission, enableCompass } = useGeolocation();
@@ -29,6 +62,7 @@ export default function Index() {
   const [destination, setDestination] = useState<MapRoom | null>(null);
   const [destBuilding, setDestBuilding] = useState<MapBuilding | null>(null);
   const [destLandmark, setDestLandmark] = useState<import("@/types/map").MapLandmark | null>(null);
+  const [exitMode, setExitMode] = useState(false);
   const [mode, setMode] = useState<AccessMode>("pedestrian");
   const [voice, setVoice] = useState(true);
   const [arrived, setArrived] = useState(false);
@@ -162,18 +196,72 @@ export default function Index() {
 
   // Para el público, ocultamos lo no operativo (cerrado / mantenimiento) tanto en mapa como en routing.
   const isOp = (s?: string | null) => !s || s === "active";
+
   const visibleBuildings = useMemo(
     () => buildings.filter((b) => b.is_active !== false && isOp(b.status)),
     [buildings],
   );
-  const visibleParkings   = useMemo(() => parkings.filter((p) => isOp(p.status)), [parkings]);
-  const visibleLandmarks  = useMemo(() => landmarks.filter((l) => l.is_active !== false && isOp(l.status)), [landmarks]);
-  
-  const visibleEntrances  = useMemo(() => entrances.filter((e) => isOp(e.status)), [entrances]);
-  const visibleCampusEnts = useMemo(() => campusEntrances.filter((c) => c.is_active !== false && isOp(c.status)), [campusEntrances]);
-  // Calles cerradas no se muestran al público y no se usan para calcular rutas.
+
+  const currentAudience =
+    profile?.user_type === "docente"
+      ? "teacher"
+      : profile?.user_type === "administrativo"
+        ? "administrative"
+        : profile?.user_type === "estudiante"
+          ? "student"
+          : "public";
+
+  const visibleParkings = useMemo(
+    () =>
+      parkings.filter((p) => {
+        const audiences = (p as any).target_audiences ?? [(p as any).target_audience ?? "public"];
+
+        return (
+          (p as any).is_active !== false &&
+          isOp(p.status) &&
+          (audiences.includes("public") || audiences.includes(currentAudience))
+        );
+      }),
+    [parkings, currentAudience],
+  );
+
+  const visibleLandmarks = useMemo(
+    () => landmarks.filter((l) => l.is_active !== false && isOp(l.status)),
+    [landmarks],
+  );
+
+  const visibleEntrances = useMemo(
+    () =>
+      entrances.filter(
+        (e) =>
+          (e as any).is_active !== false &&
+          isOp(e.status) &&
+          ((e as any).direction === "entry" ||
+            (e as any).direction === "both" ||
+            (e as any).direction == null),
+      ),
+    [entrances],
+  );
+
+  const visibleCampusEnts = useMemo(
+    () =>
+      campusEntrances.filter(
+        (c) =>
+          c.is_active !== false &&
+          isOp(c.status),
+      ),
+    [campusEntrances],
+  );
+
   const visiblePaths = useMemo(
-    () => paths.filter((p) => p.status !== "closed" && p.status !== "temporary_closed"),
+    () =>
+      paths.filter(
+        (p) =>
+          (p as any).is_active !== false &&
+          isOp(p.status) &&
+          p.status !== "closed" &&
+          p.status !== "temporary_closed",
+      ),
     [paths],
   );
 
@@ -243,6 +331,40 @@ export default function Index() {
   }, [destination, visibleBuildings, floors, visibleEntrances, visiblePaths, visibleCampusEnts, origin, mode, outside, streetApproach]);
 
   const buildingRoute = useMemo<RouteResult | null>(() => {
+    if (exitMode) {
+      const validExits = visibleCampusEnts.filter(
+        (c) =>
+          c.is_active !== false &&
+          isOp(c.status) &&
+          (c.direction === "exit" || c.direction === "both") &&
+          (mode === "pedestrian"
+            ? c.entry_type === "pedestrian" || c.entry_type === "mixed"
+            : c.entry_type === "vehicle" || c.entry_type === "mixed"),
+      );
+
+      if (!validExits.length) return null;
+
+      let bestRoute: RouteResult | null = null;
+
+      for (const gate of validExits) {
+        const route = computeRoute(
+          visiblePaths,
+          origin,
+          { lat: gate.lat, lng: gate.lng },
+          mode,
+          visibleBuildings,
+          { allowExitRouting: true } as any,
+        );
+
+        if (!route) continue;
+
+        if (!bestRoute || route.distance < bestRoute.distance) {
+          bestRoute = route;
+        }
+      }
+
+      return bestRoute;
+    }
     if (destination) return arrival?.exteriorRoute ?? null;
     if (destBuilding) {
       const best = pickBestEntrance({ origin, building: destBuilding, entrances: visibleEntrances, mode });
@@ -275,7 +397,7 @@ export default function Index() {
       return computeRoute(visiblePaths, origin, target, mode, visibleBuildings);
     }
     return null;
-  }, [destination, destBuilding, destLandmark, visiblePaths, visibleEntrances, visibleBuildings, visibleCampusEnts, origin, mode, arrival, outside, streetApproach]);
+  }, [exitMode, destination, destBuilding, destLandmark, visiblePaths, visibleEntrances, visibleBuildings, visibleCampusEnts, origin, mode, arrival, outside, streetApproach]);
 
   useEffect(() => {
     if (!arrival || !position) return;
@@ -341,9 +463,17 @@ export default function Index() {
     setDestination(null); setDestBuilding(null); setDestLandmark(l); resetRoute();
     announceSelection(l.name);
   };
+  const handleSelectExit = () => {
+    setDestination(null);
+    setDestBuilding(null);
+    setDestLandmark(null);
+    setExitMode(true);
+    resetRoute();
+    announceSelection("salida del campus");
+  };
   const handleClose = () => {
     setDestination(null); setDestBuilding(null); setDestLandmark(null);
-    resetRoute(); stopSpeaking();
+    resetRoute(); stopSpeaking(); setExitMode(false);
   };
   const handleStartNavigation = () => {
     setNavMode("navigating");
@@ -383,9 +513,11 @@ export default function Index() {
     setInstallPrompt(null);
   };
 
-  const hasActiveRoute = !!(destination || destBuilding || destLandmark);
+  const hasActiveRoute = !!(destination || destBuilding || destLandmark || exitMode);
   const activeDestinationName =
-    destination?.name ?? destBuilding?.name ?? destLandmark?.name ?? "tu destino";
+    exitMode
+      ? "Salida del campus"
+      : destination?.name ?? destBuilding?.name ?? destLandmark?.name ?? "tu destino";
   const remainingDistance = useMemo(() => {
     if (!buildingRoute || !position) return buildingRoute?.distance ?? 0;
     const coords = buildingRoute.coords;
@@ -414,6 +546,30 @@ export default function Index() {
   const isPreviewing = hasActiveRoute && navMode === "preview";
   const previewDestinationCode =
     destination?.code ?? destBuilding?.code ?? null;
+
+  const snappedUser = useMemo(
+    () => nearestPointOnRoute(position, isNavigating ? buildingRoute : null),
+    [position, buildingRoute, isNavigating],
+  );
+
+  const routeBearing = useMemo(() => {
+    if (!buildingRoute?.coords?.length || !position) return heading;
+
+    const coords = buildingRoute.coords;
+    let nearestIdx = 0;
+    let best = Infinity;
+
+    coords.forEach((p, i) => {
+      const d = haversine(position, p);
+      if (d < best) {
+        best = d;
+        nearestIdx = i;
+      }
+    });
+
+    const next = coords[Math.min(nearestIdx + 1, coords.length - 1)];
+    return next ? bearingBetween(coords[nearestIdx], next) : heading;
+  }, [buildingRoute, position, heading]);
 
   const goToMyClass = async () => {
     if (!profile?.cedula) {
@@ -542,10 +698,10 @@ export default function Index() {
         parkings={visibleParkings}
         paths={visiblePaths}
         landmarks={visibleLandmarks}
-        user={position}
+        user={snappedUser}
         userAccuracy={accuracy}
         userMode={mode}
-        userBearing={heading}
+        userBearing={routeBearing}
         followUser={isNavigating && !arrived}
         rotateWithHeading={isNavigating && !arrived}
         route={buildingRoute}
@@ -687,6 +843,7 @@ export default function Index() {
               onSelectRoom={handleSelectRoom}
               onSelectBuilding={handleSelectBuilding}
               onSelectLandmark={handleSelectLandmark}
+              onSelectExit={handleSelectExit}
             />
 
             {(error || gpsError) && (
@@ -701,8 +858,8 @@ export default function Index() {
 
       {/* Vista previa (estilo Google Maps): ruta + ETA + indicaciones + botón Iniciar */}
       {isPreviewing && buildingRoute && (
-        <div className="absolute bottom-0 inset-x-0 z-[1000] p-3 sm:p-4 pointer-events-none">
-          <div className="max-w-2xl mx-auto max-h-[55vh] overflow-y-auto overscroll-contain pointer-events-auto rounded-3xl">
+        <div className="absolute bottom-0 inset-x-0 z-[1000] p-2 sm:p-3 pointer-events-none">
+          <div className="max-w-2xl mx-auto max-h-[72vh] overflow-y-auto overscroll-contain pointer-events-auto rounded-3xl pb-3">
             <RoutePreview
               destinationName={activeDestinationName}
               destinationCode={previewDestinationCode}
@@ -801,3 +958,4 @@ export default function Index() {
     </div>
   );
 }
+

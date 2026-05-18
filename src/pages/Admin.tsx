@@ -80,9 +80,12 @@ export default function Admin() {
   const [parkingType, setParkingType] = useState<ParkingType>("car");
   const [parkingName, setParkingName] = useState("");
   const [parkingCapacity, setParkingCapacity] = useState<number | "">("");
+  const [parkingAudiences, setParkingAudiences] = useState<string[]>(["public"]);
 
   // calle
   const [pathName, setPathName] = useState("");
+  const [pathDirection, setPathDirection] =
+    useState<"both" | "entry" | "exit">("both");
 
   // entrada de edificio
   const [bldEntryMode, setBldEntryMode] = useState<AccessMode | "both">("pedestrian");
@@ -167,16 +170,25 @@ export default function Admin() {
   };
 
   const saveParking = async (p: { lat: number; lng: number }) => {
+    const audiences = parkingAudiences.length ? parkingAudiences : ["public"];
+
     const { error } = await db.from("map_parkings").insert({
       name: parkingName.trim() || `Parqueo ${PARKING_LABELS[parkingType]}`,
       type: parkingType,
       capacity: parkingCapacity === "" ? null : Number(parkingCapacity),
+      target_audience: audiences[0],
+      target_audiences: audiences,
       geom: pointBox(p.lat, p.lng),
-      centroid_lat: p.lat, centroid_lng: p.lng,
+      centroid_lat: p.lat,
+      centroid_lng: p.lng,
     });
+
     if (error) return toast({ title: "Error", description: error.message, variant: "destructive" });
+
     toast({ title: "Parqueo creado" });
-    setParkingName(""); setParkingCapacity("");
+    setParkingName("");
+    setParkingCapacity("");
+    setParkingAudiences(["public"]);
     setTool("none");
     data.reload();
   };
@@ -240,19 +252,46 @@ export default function Admin() {
   // ====== Calles (line) ======
   const finishPath = async () => {
     if (drawing.length < 2) {
-      toast({ title: "Necesitas al menos 2 puntos", description: "Marca el punto A y el punto B de la calle.", variant: "destructive" });
+      toast({
+        title: "Necesitas al menos 2 puntos",
+        description: "Marca el punto A y el punto B de la calle.",
+        variant: "destructive",
+      });
       return;
     }
+
     const modes: AccessMode[] = tool === "path-veh" ? ["vehicle"] : ["pedestrian"];
+
     const { error } = await db.from("map_paths").insert({
       name: pathName.trim() || null,
       access_modes: modes,
-      bidirectional: true,
-      geom: { type: "LineString", coordinates: drawing.map((p) => [p.lng, p.lat]) },
+      bidirectional: pathDirection === "both",
+      direction: pathDirection,
+      is_active: true,
+      status: "active",
+      geom: {
+        type: "LineString",
+        coordinates: drawing.map((p) => [p.lng, p.lat]),
+      },
     });
-    if (error) return toast({ title: "Error", description: error.message, variant: "destructive" });
-    toast({ title: "Calle creada", description: `${drawing.length} puntos · ${modes[0]}` });
-    setDrawing([]); setPathName(""); setTool("none");
+
+    if (error) {
+      return toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
+
+    toast({
+      title: "Calle creada",
+      description: `${drawing.length} puntos · ${modes[0]} · ${pathDirection}`,
+    });
+
+    setDrawing([]);
+    setPathName("");
+    setPathDirection("both");
+    setTool("none");
     data.reload();
   };
 
@@ -290,9 +329,19 @@ export default function Admin() {
     } else if (t.kind === "parking") {
       table = "map_parkings";
       patch = {
-        name: t.data.name, type: t.data.type, capacity: t.data.capacity,
+        name: t.data.name,
+        type: t.data.type,
+        capacity: t.data.capacity,
+        target_audience:
+          (t.data as any).target_audiences?.[0] ??
+          (t.data as any).target_audience ??
+          "public",
+        target_audiences:
+          (t.data as any).target_audiences ??
+          [(t.data as any).target_audience ?? "public"],
         status: (t.data as any).status,
-        centroid_lat: t.data.centroid_lat, centroid_lng: t.data.centroid_lng,
+        centroid_lat: t.data.centroid_lat,
+        centroid_lng: t.data.centroid_lng,
         geom: pointBox(t.data.centroid_lat, t.data.centroid_lng),
       };
     } else if (t.kind === "entrance") {
@@ -312,7 +361,11 @@ export default function Admin() {
     } else if (t.kind === "path") {
       table = "map_paths";
       patch = {
-        name: t.data.name, access_modes: t.data.access_modes, bidirectional: t.data.bidirectional,
+        name: t.data.name,
+        access_modes: t.data.access_modes,
+        bidirectional: (t.data as any).direction === "both",
+        direction: (t.data as any).direction ?? "both",
+        is_active: (t.data as any).is_active !== false,
         status: (t.data as any).status,
         geom: (t.data as any).geom,
       };
@@ -560,6 +613,31 @@ export default function Admin() {
                         onChange={(e) => setParkingCapacity(e.target.value === "" ? "" : +e.target.value)}
                         placeholder="Ej: 30" />
                     </Field>
+                    <Field label="Disponible para *" hint="Puedes seleccionar más de un público.">
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        {[
+                          ["public", "Público"],
+                          ["student", "Estudiantes"],
+                          ["teacher", "Docentes"],
+                          ["staff", "Administrativos"],
+                        ].map(([value, label]) => (
+                          <label key={value} className="flex items-center gap-2 rounded-md border p-2">
+                            <input
+                              type="checkbox"
+                              checked={parkingAudiences.includes(value)}
+                              onChange={(e) => {
+                                setParkingAudiences((prev) =>
+                                  e.target.checked
+                                    ? [...new Set([...prev, value])]
+                                    : prev.filter((x) => x !== value),
+                                );
+                              }}
+                            />
+                            {label}
+                          </label>
+                        ))}
+                      </div>
+                    </Field>
                     <p className="text-xs text-primary font-medium">📍 Paso 3 — Haz clic en el mapa <i>o</i> pega las coordenadas.</p>
                     <PasteCoordInput buttonLabel="Guardar parqueo aquí" onAdd={(lat, lng) => saveParking({ lat, lng })} />
                   </Card>
@@ -666,6 +744,20 @@ export default function Admin() {
                     </Label>
                     <Field label="Nombre interno" hint="Opcional. Solo para que tú la identifiques en la lista.">
                       <Input value={pathName} onChange={(e) => setPathName(e.target.value)} placeholder="(opcional)" />
+                    </Field>
+                    <Field
+                      label="Sentido de circulación *"
+                      hint="Define si esta calle permite entrada, salida o ambos sentidos."
+                    >
+                      <select
+                        value={pathDirection}
+                        onChange={(e) => setPathDirection(e.target.value as "both" | "entry" | "exit")}
+                        className="w-full border rounded-md p-2 text-sm bg-background"
+                      >
+                        <option value="both">↕️ Entrada y salida</option>
+                        <option value="entry">⬇️ Solo entrada</option>
+                        <option value="exit">⬆️ Solo salida</option>
+                      </select>
                     </Field>
                     <p className="text-xs text-primary font-medium">
                       📍 Paso 3 — Haz clic punto A, luego punto B (puedes añadir más vértices).
@@ -974,6 +1066,40 @@ function EditPanel({ target, setTarget, onSave, onDelete, originalStatus, reason
           </Field>
           <Field label="Capacidad"><Input type="number" value={(t.data as MapParking).capacity ?? ""}
             onChange={(e) => update({ capacity: e.target.value === "" ? null : +e.target.value })} /></Field>
+          <Field label="Disponible para">
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              {[
+                ["public", "Público"],
+                ["student", "Estudiantes"],
+                ["teacher", "Docentes"],
+                ["staff", "Administrativos"],
+              ].map(([value, label]) => {
+                const audiences =
+                  (t.data as any).target_audiences ??
+                  [(t.data as any).target_audience ?? "public"];
+
+                return (
+                  <label key={value} className="flex items-center gap-2 rounded-md border p-2">
+                    <input
+                      type="checkbox"
+                      checked={audiences.includes(value)}
+                      onChange={(e) => {
+                        const next = e.target.checked
+                          ? [...new Set([...audiences, value])]
+                          : audiences.filter((x: string) => x !== value);
+
+                        update({
+                          target_audiences: next.length ? next : ["public"],
+                          target_audience: next[0] ?? "public",
+                        });
+                      }}
+                    />
+                    {label}
+                  </label>
+                );
+              })}
+            </div>
+          </Field>
           <CoordFields lat={(t.data as MapParking).centroid_lat} lng={(t.data as MapParking).centroid_lng}
             onChange={(lat, lng) => update({ centroid_lat: lat, centroid_lng: lng })} />
         </>
@@ -1100,6 +1226,26 @@ function EditPanel({ target, setTarget, onSave, onDelete, originalStatus, reason
                 onChange={(e) => update({ bidirectional: e.target.checked })} />
               Bidireccional
             </label>
+            <Field label="Sentido de circulación">
+              <select
+                value={(target.data as any).direction ?? "both"}
+                onChange={(e) =>
+                  setTarget({
+                    ...target,
+                    data: {
+                      ...target.data,
+                      direction: e.target.value,
+                      bidirectional: e.target.value === "both",
+                    },
+                  } as any)
+                }
+                className="w-full border rounded-md p-2 text-sm bg-background"
+              >
+                <option value="both">↕️ Entrada y salida</option>
+                <option value="entry">⬇️ Solo entrada</option>
+                <option value="exit">⬆️ Solo salida</option>
+              </select>
+            </Field>
 
             <div className="space-y-2 pt-2 border-t">
               <Label className="text-xs uppercase tracking-wide text-muted-foreground">

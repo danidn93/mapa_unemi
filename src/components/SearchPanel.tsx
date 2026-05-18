@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Search, MapPin, Building2, Landmark } from "lucide-react";
+import { Search, MapPin, Building2, Landmark, LogOut } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import type { LandmarkKind, MapBuilding, MapLandmark, MapRoom } from "@/types/map";
 import { cn } from "@/lib/utils";
@@ -11,6 +11,7 @@ interface Props {
   onSelectRoom: (r: MapRoom) => void;
   onSelectBuilding: (b: MapBuilding) => void;
   onSelectLandmark?: (l: MapLandmark) => void;
+  onSelectExit?: () => void;
   className?: string;
 }
 
@@ -29,13 +30,46 @@ const LANDMARK_LABEL: Record<LandmarkKind, string> = {
   other: "Otro",
 };
 
-export function SearchPanel({ rooms, buildings, landmarks = [], onSelectRoom, onSelectBuilding, onSelectLandmark, className }: Props) {
+const normalize = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+
+export function SearchPanel({
+  rooms,
+  buildings,
+  landmarks = [],
+  onSelectRoom,
+  onSelectBuilding,
+  onSelectLandmark,
+  onSelectExit,
+  className,
+}: Props) {
   const [q, setQ] = useState("");
 
   const results = useMemo(() => {
-    const term = q.trim().toLowerCase();
-    if (!term) return { rooms: [] as MapRoom[], buildings: [] as MapBuilding[], landmarks: [] as MapLandmark[] };
-    const match = (s: string | null | undefined) => s?.toLowerCase().includes(term);
+    const term = normalize(q);
+
+    if (!term) {
+      return {
+        rooms: [] as MapRoom[],
+        buildings: [] as MapBuilding[],
+        landmarks: [] as MapLandmark[],
+        showExit: false,
+      };
+    }
+
+    const match = (s: string | null | undefined) =>
+      normalize(String(s ?? "")).includes(term);
+
+    const showExit =
+      !!onSelectExit &&
+      ["salida", "salir", "afuera", "garita", "puerta", "egreso"].some((word) =>
+        word.includes(term) || term.includes(word),
+      );
+
     return {
       rooms: rooms
         .filter((r) => match(r.name) || match(r.code) || match(r.description) || r.keywords?.some(match))
@@ -46,10 +80,15 @@ export function SearchPanel({ rooms, buildings, landmarks = [], onSelectRoom, on
       landmarks: landmarks
         .filter((l) => match(l.name) || match(l.description) || match(LANDMARK_LABEL[l.kind]))
         .slice(0, 6),
+      showExit,
     };
-  }, [q, rooms, buildings, landmarks]);
+  }, [q, rooms, buildings, landmarks, onSelectExit]);
 
-  const hasResults = results.rooms.length + results.buildings.length + results.landmarks.length > 0;
+  const hasResults =
+    results.showExit ||
+    results.rooms.length + results.buildings.length + results.landmarks.length > 0;
+
+  const clearSearch = () => setQ("");
 
   return (
     <div className={cn("rounded-2xl bg-card shadow-[var(--shadow-card)] border", className)}>
@@ -58,21 +97,46 @@ export function SearchPanel({ rooms, buildings, landmarks = [], onSelectRoom, on
         <Input
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Buscar aula, edificio, baño, plazoleta…"
+          placeholder="Buscar aula, edificio, baño, salida…"
           className="pl-9 h-11 rounded-xl"
         />
       </div>
+
       {q && (
         <div className="max-h-80 overflow-auto pb-2">
           {!hasResults && (
             <p className="px-4 py-6 text-center text-sm text-muted-foreground">Sin resultados</p>
           )}
+
+          {results.showExit && (
+            <button
+              onClick={() => {
+                clearSearch();
+                onSelectExit?.();
+              }}
+              className="flex w-full items-start gap-3 px-4 py-2.5 hover:bg-accent transition text-left"
+            >
+              <span className="mt-0.5 grid h-8 w-8 place-items-center rounded-lg bg-primary/15 text-primary">
+                <LogOut className="h-4 w-4" />
+              </span>
+              <span className="flex-1">
+                <span className="block font-medium">Salir del campus</span>
+                <span className="block text-xs text-muted-foreground">
+                  Ruta hacia la salida más cercana según el modo seleccionado
+                </span>
+              </span>
+            </button>
+          )}
+
           {results.rooms.map((r) => {
             const b = buildings.find((bb) => bb.id === r.building_id);
             return (
               <button
                 key={r.id}
-                onClick={() => onSelectRoom(r)}
+                onClick={() => {
+                  clearSearch();
+                  onSelectRoom(r);
+                }}
                 className="flex w-full items-start gap-3 px-4 py-2.5 hover:bg-accent transition text-left"
               >
                 <span className="mt-0.5 grid h-8 w-8 place-items-center rounded-lg bg-primary/15 text-primary">
@@ -85,10 +149,14 @@ export function SearchPanel({ rooms, buildings, landmarks = [], onSelectRoom, on
               </button>
             );
           })}
+
           {results.buildings.map((b) => (
             <button
               key={b.id}
-              onClick={() => onSelectBuilding(b)}
+              onClick={() => {
+                clearSearch();
+                onSelectBuilding(b);
+              }}
               className="flex w-full items-start gap-3 px-4 py-2.5 hover:bg-accent transition text-left"
             >
               <span className="mt-0.5 grid h-8 w-8 place-items-center rounded-lg bg-secondary/15 text-secondary">
@@ -102,10 +170,14 @@ export function SearchPanel({ rooms, buildings, landmarks = [], onSelectRoom, on
               </span>
             </button>
           ))}
+
           {results.landmarks.map((l) => (
             <button
               key={l.id}
-              onClick={() => onSelectLandmark?.(l)}
+              onClick={() => {
+                clearSearch();
+                onSelectLandmark?.(l);
+              }}
               className="flex w-full items-start gap-3 px-4 py-2.5 hover:bg-accent transition text-left"
             >
               <span className="mt-0.5 grid h-8 w-8 place-items-center rounded-lg bg-accent text-accent-foreground">
