@@ -1,16 +1,18 @@
 import { useMemo, useState } from "react";
-import { Search, MapPin, Building2, Landmark, LogOut } from "lucide-react";
+import { Search, MapPin, Building2, Landmark, LogOut, Car } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import type { LandmarkKind, MapBuilding, MapLandmark, MapRoom } from "@/types/map";
+import type { LandmarkKind, MapBuilding, MapLandmark, MapParking, MapRoom } from "@/types/map";
 import { cn } from "@/lib/utils";
 
 interface Props {
   rooms: MapRoom[];
   buildings: MapBuilding[];
   landmarks?: MapLandmark[];
+  parkings?: MapParking[];
   onSelectRoom: (r: MapRoom) => void;
   onSelectBuilding: (b: MapBuilding) => void;
   onSelectLandmark?: (l: MapLandmark) => void;
+  onSelectParking?: (p: MapParking) => void;
   onSelectExit?: () => void;
   className?: string;
 }
@@ -41,9 +43,11 @@ export function SearchPanel({
   rooms,
   buildings,
   landmarks = [],
+  parkings = [],
   onSelectRoom,
   onSelectBuilding,
   onSelectLandmark,
+  onSelectParking,
   onSelectExit,
   className,
 }: Props) {
@@ -57,6 +61,7 @@ export function SearchPanel({
         rooms: [] as MapRoom[],
         buildings: [] as MapBuilding[],
         landmarks: [] as MapLandmark[],
+        parkings: [] as MapParking[],
         showExit: false,
       };
     }
@@ -80,13 +85,34 @@ export function SearchPanel({
       landmarks: landmarks
         .filter((l) => match(l.name) || match(l.description) || match(LANDMARK_LABEL[l.kind]))
         .slice(0, 6),
+      parkings: parkings
+        .filter((p) => {
+          const audiences = (p as any).target_audiences ?? [(p as any).target_audience ?? "public"];
+
+          return (
+            audiences.includes("public") &&
+            (
+              match(p.name) ||
+              match(p.type) ||
+              match("parqueadero") ||
+              match("parqueo") ||
+              match("parking") ||
+              match("estacionamiento")
+            )
+          );
+        })
+        .slice(0, 6),
       showExit,
     };
-  }, [q, rooms, buildings, landmarks, onSelectExit]);
+  }, [q, rooms, buildings, landmarks, parkings, onSelectExit]);
 
   const hasResults =
     results.showExit ||
-    results.rooms.length + results.buildings.length + results.landmarks.length > 0;
+    results.rooms.length +
+      results.buildings.length +
+      results.landmarks.length +
+      results.parkings.length >
+      0;
 
   const clearSearch = () => setQ("");
 
@@ -166,6 +192,31 @@ export function SearchPanel({
                 <span className="block font-medium">{b.name}</span>
                 <span className="block text-xs text-muted-foreground">
                   {b.faculty ?? "Edificio"} · {b.floors_count} pisos
+                </span>
+              </span>
+            </button>
+          ))}
+
+          {results.parkings.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => {
+                clearSearch();
+                onSelectParking?.(p);
+              }}
+              className="flex w-full items-start gap-3 px-4 py-2.5 hover:bg-accent transition text-left"
+            >
+              <span className="mt-0.5 grid h-8 w-8 place-items-center rounded-lg bg-blue-500/15 text-blue-700">
+                <Car className="h-4 w-4" />
+              </span>
+
+              <span className="flex-1">
+                <span className="block font-medium">
+                  {p.name ?? "Parqueadero"}
+                </span>
+
+                <span className="block text-xs text-muted-foreground">
+                  Parqueadero · {p.type}
                 </span>
               </span>
             </button>

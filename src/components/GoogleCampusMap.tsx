@@ -132,10 +132,18 @@ type UserLocationOverlay = google.maps.OverlayView & {
 
 type RotatableMap = google.maps.Map & {
   setHeading?: (heading: number) => void;
+  setTilt?: (tilt: number) => void;
 };
 
 function setMapHeading(map: google.maps.Map, heading: number) {
-  try { (map as RotatableMap).setHeading?.(heading); } catch { /* ignore */ }
+  try {
+    const normalized = ((heading % 360) + 360) % 360;
+    const m = map as RotatableMap;
+    m.setTilt?.(0);
+    m.setHeading?.(normalized);
+  } catch {
+    // ignore
+  }
 }
 
 function createUserLocationOverlay(position: LatLng, mode: AccessMode): UserLocationOverlay {
@@ -261,6 +269,7 @@ export function GoogleCampusMap({
           zoom: 18,
           mapTypeId: "roadmap",
           mapId: "DEMO_MAP_ID",
+          renderingType: google.maps.RenderingType.VECTOR,
           disableDefaultUI: false,
           zoomControl: true,
           streetViewControl: false,
@@ -336,24 +345,41 @@ export function GoogleCampusMap({
     route.coords.forEach((p) => bounds.extend({ lat: p.lat, lng: p.lng }));
     if (user) bounds.extend({ lat: user.lat, lng: user.lng });
     map.fitBounds(bounds, 80);
-    setMapHeading(map, 0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fitRouteToken]);
 
-  // Follow user + heading rotation (solo si no movió el mapa manualmente)
-  useEffect(() => {
-    if (!mapRef.current) return;
-    if (followUser && user && !userMovedRef.current) {
-      mapRef.current.panTo({ lat: user.lat, lng: user.lng });
-      if (rotateWithHeading) {
-        const deg = userBearing ?? 0;
-        setMapHeading(mapRef.current, deg);
-      }
-    }
     if (!rotateWithHeading) {
-      setMapHeading(mapRef.current, 0);
+      setMapHeading(map, 0);
     }
-  }, [ready, followUser, user, userBearing, rotateWithHeading]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fitRouteToken, rotateWithHeading]);
+
+  // Rotar SIEMPRE el mapa cuando el padre active rotateWithHeading.
+  // Esto no depende de followUser ni de si el usuario movió el mapa.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    if (!rotateWithHeading) {
+      setMapHeading(map, 0);
+      return;
+    }
+
+    const deg = Number(userBearing ?? 0);
+
+    if (Number.isFinite(deg)) {
+      setMapHeading(map, deg);
+    }
+  }, [ready, rotateWithHeading, userBearing]);
+
+  // Follow user: solo centra al usuario.
+  // La rotación se maneja en otro useEffect para que no dependa del pan.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    if (followUser && user && !userMovedRef.current) {
+      map.panTo({ lat: user.lat, lng: user.lng });
+    }
+  }, [ready, followUser, user]);
 
   // Static layers
   useEffect(() => {

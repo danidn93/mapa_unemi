@@ -10,13 +10,44 @@ import { TigrilloGuide } from "@/components/TigrilloGuide";
 import { useMapData } from "@/hooks/useMapData";
 import { useGeolocation } from "@/hooks/useGeolocation";
 import { computeRoute } from "@/lib/routing";
-import { routeToRoomDestination, pickBestEntrance, resolveOriginFromBuildingExit } from "@/lib/arrival";
-import { isOutsideCampus, routeViaCampusEntry, pickBestCampusEntry } from "@/lib/campusGate";
+import {
+  routeToRoomDestination,
+  pickBestEntrance,
+  resolveOriginFromBuildingExit,
+} from "@/lib/arrival";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
+import {
+  isOutsideCampus,
+  routeViaCampusEntry,
+  pickBestCampusEntry,
+} from "@/lib/campusGate";
 import { useStreetApproach } from "@/hooks/useStreetApproach";
 import { haversine, UNEMI_CENTER } from "@/lib/geo";
 import { speak, stopSpeaking, primeSpeech } from "@/lib/voice";
-import type { AccessMode, ArrivalGuide, LatLng, MapBuilding, MapRoom, RouteResult } from "@/types/map";
-import { LogIn, MapPin, LayoutDashboard, Share2, Download, Search, School } from "lucide-react";
+import type {
+  AccessMode,
+  ArrivalGuide,
+  LatLng,
+  MapBuilding,
+  MapRoom,
+  RouteResult,
+} from "@/types/map";
+import {
+  LogIn,
+  MapPin,
+  LayoutDashboard,
+  Share2,
+  Download,
+  Search,
+  School,
+  Menu,
+} from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 
@@ -38,7 +69,134 @@ function bearingBetween(a: LatLng, b: LatLng) {
   return (toDeg(Math.atan2(y, x)) + 360) % 360;
 }
 
-function nearestPointOnRoute(user: LatLng | null, route: RouteResult | null): LatLng | null {
+function pointInPolygon(point: LatLng, polygon: LatLng[]) {
+  let inside = false;
+
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].lng;
+    const yi = polygon[i].lat;
+    const xj = polygon[j].lng;
+    const yj = polygon[j].lat;
+
+    const intersect =
+      yi > point.lat !== yj > point.lat &&
+      point.lng < ((xj - xi) * (point.lat - yi)) / (yj - yi) + xi;
+
+    if (intersect) inside = !inside;
+  }
+
+  return inside;
+}
+
+function getBuildingPolygon(building: any): LatLng[] {
+  const raw =
+    building.polygon ??
+    building.geom ??
+    building.geometry ??
+    building.location ??
+    null;
+
+  if (!raw) return [];
+
+  if (Array.isArray(raw)) {
+    return raw
+      .map((p: any) => ({
+        lat: Number(p.lat ?? p.latitude),
+        lng: Number(p.lng ?? p.longitude),
+      }))
+      .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+  }
+
+  if (Array.isArray(raw?.coordinates?.[0])) {
+    return raw.coordinates[0]
+      .map((p: any) => ({
+        lat: Number(p[1]),
+        lng: Number(p[0]),
+      }))
+      .filter((p: LatLng) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+  }
+
+  return [];
+}
+
+function resolveOriginThroughBuildingDoor(params: {
+  origin: LatLng;
+  buildings: MapBuilding[];
+  entrances: any[];
+  mode: AccessMode;
+}) {
+  const { origin, buildings, entrances, mode } = params;
+
+  const insideBuilding = buildings.find((b: any) => {
+    const polygon = getBuildingPolygon(b);
+    if (!polygon.length) return false;
+    return pointInPolygon(origin, polygon);
+  });
+
+  if (!insideBuilding) {
+    return {
+      origin,
+      building: null as MapBuilding | null,
+      forcedDoor: null as any,
+      isInsideBuilding: false,
+    };
+  }
+
+  const enabledDoors = entrances.filter((e: any) => {
+    const sameBuilding = e.building_id === insideBuilding.id;
+
+    const enabled =
+      e.is_active !== false &&
+      e.status !== "closed" &&
+      e.status !== "temporary_closed" &&
+      e.status !== "maintenance";
+
+    const validDirection =
+      e.direction === "entry" ||
+      e.direction === "both" ||
+      e.direction == null;
+
+    const accessModes = Array.isArray(e.access_modes) ? e.access_modes : [];
+
+    const validMode =
+      accessModes.length === 0 ||
+      accessModes.includes(mode) ||
+      accessModes.includes("both") ||
+      (mode === "pedestrian" &&
+        (e.type === "pedestrian" || e.type === "mixed" || e.entry_type === "pedestrian" || e.entry_type === "mixed")) ||
+      (mode === "vehicle" &&
+        (e.type === "vehicle" || e.type === "mixed" || e.entry_type === "vehicle" || e.entry_type === "mixed"));
+
+    return sameBuilding && enabled && validDirection && validMode;
+  });
+
+  if (!enabledDoors.length) {
+    return {
+      origin,
+      building: insideBuilding,
+      forcedDoor: null as any,
+      isInsideBuilding: true,
+    };
+  }
+
+  const forcedDoor = enabledDoors.reduce((best: any, door: any) => {
+    const d = haversine(origin, { lat: door.lat, lng: door.lng });
+    const bestD = haversine(origin, { lat: best.lat, lng: best.lng });
+    return d < bestD ? door : best;
+  }, enabledDoors[0]);
+
+  return {
+    origin: { lat: forcedDoor.lat, lng: forcedDoor.lng },
+    building: insideBuilding,
+    forcedDoor,
+    isInsideBuilding: true,
+  };
+}
+
+function nearestPointOnRoute(
+  user: LatLng | null,
+  route: RouteResult | null,
+): LatLng | null {
   if (!user || !route?.coords?.length) return user;
 
   let nearest = route.coords[0];
@@ -56,12 +214,33 @@ function nearestPointOnRoute(user: LatLng | null, route: RouteResult | null): La
 }
 
 export default function Index() {
-  const { buildings, floors, rooms, entrances, campusEntrances, paths, parkings, landmarks, loading, error } = useMapData();
-  const { position, accuracy, heading, error: gpsError, needsCompassPermission, enableCompass } = useGeolocation();
+  const {
+    buildings,
+    floors,
+    rooms,
+    entrances,
+    campusEntrances,
+    paths,
+    parkings,
+    landmarks,
+    loading,
+    error,
+  } = useMapData();
+
+  const {
+    position,
+    accuracy,
+    heading,
+    error: gpsError,
+    needsCompassPermission,
+    enableCompass,
+  } = useGeolocation();
 
   const [destination, setDestination] = useState<MapRoom | null>(null);
   const [destBuilding, setDestBuilding] = useState<MapBuilding | null>(null);
-  const [destLandmark, setDestLandmark] = useState<import("@/types/map").MapLandmark | null>(null);
+  const [destLandmark, setDestLandmark] =
+    useState<import("@/types/map").MapLandmark | null>(null);
+
   const [exitMode, setExitMode] = useState(false);
   const [mode, setMode] = useState<AccessMode>("pedestrian");
   const [voice, setVoice] = useState(true);
@@ -70,69 +249,12 @@ export default function Index() {
   const [hasSession, setHasSession] = useState(false);
   const [sharedPin, setSharedPin] = useState<LatLng | null>(null);
   const [installPrompt, setInstallPrompt] = useState<any>(null);
-  // "preview" muestra ruta+pasos+ETA, sin seguir GPS ni rotar el mapa.
-  // "navigating" inicia el recorrido (sigue al usuario y rota el mapa).
   const [navMode, setNavMode] = useState<"preview" | "navigating">("preview");
   const [recenterToken, setRecenterToken] = useState(0);
   const [fitRouteToken, setFitRouteToken] = useState(0);
-
-  // PWA: capturar evento de instalación
-  useEffect(() => {
-    const onPrompt = (e: any) => {
-      e.preventDefault();
-      setInstallPrompt(e);
-    };
-    window.addEventListener("beforeinstallprompt", onPrompt);
-    return () => window.removeEventListener("beforeinstallprompt", onPrompt);
-  }, []);
-
-  // Lee ?share=lat,lng
-  useEffect(() => {
-    const sp = new URLSearchParams(window.location.search);
-    const s = sp.get("share");
-    if (s) {
-      const [lat, lng] = s.split(",").map(Number);
-      if (Number.isFinite(lat) && Number.isFinite(lng)) {
-        setSharedPin({ lat, lng });
-        toast({ title: "📍 Ubicación compartida", description: `${lat.toFixed(5)}, ${lng.toFixed(5)}` });
-      }
-    }
-  }, []);
-
-  // Lee ?focus=building:<id> | room:<id> | landmark:<id>  (usado por notificaciones push)
-  useEffect(() => {
-    if (loading) return;
-    const sp = new URLSearchParams(window.location.search);
-    const f = sp.get("focus");
-    if (!f) return;
-    const [kind, id] = f.split(":");
-    if (!kind || !id) return;
-    if (kind === "building") {
-      const b = buildings.find((x) => String(x.id) === id);
-      if (b) {
-        setDestination(null); setDestBuilding(b); setDestLandmark(null);
-        toast({ title: "📌 " + b.name, description: "Trazando ruta desde la notificación" });
-      }
-    } else if (kind === "room") {
-      const r = rooms.find((x) => String(x.id) === id);
-      if (r) {
-        setDestination(r); setDestBuilding(null); setDestLandmark(null);
-        toast({ title: "📌 " + r.name, description: "Trazando ruta desde la notificación" });
-      }
-    } else if (kind === "landmark") {
-      const l = landmarks.find((x) => String(x.id) === id);
-      if (l) {
-        setDestination(null); setDestBuilding(null); setDestLandmark(l);
-        toast({ title: "📌 " + l.name, description: "Trazando ruta desde la notificación" });
-      }
-    }
-    // Limpia el query param para no re-disparar al cambiar de destino
-    const url = new URL(window.location.href);
-    url.searchParams.delete("focus");
-    window.history.replaceState({}, "", url.toString());
-  }, [loading, buildings, rooms, landmarks]);
-
   const [role, setRole] = useState<string>("public");
+  const [destParking, setDestParking] = useState<any | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const [profile, setProfile] = useState<{
     id: string;
@@ -148,6 +270,86 @@ export default function Index() {
     description: string;
   } | null>(null);
 
+  useEffect(() => {
+    const onPrompt = (e: any) => {
+      e.preventDefault();
+      setInstallPrompt(e);
+    };
+
+    window.addEventListener("beforeinstallprompt", onPrompt);
+    return () => window.removeEventListener("beforeinstallprompt", onPrompt);
+  }, []);
+
+  useEffect(() => {
+    const sp = new URLSearchParams(window.location.search);
+    const s = sp.get("share");
+
+    if (s) {
+      const [lat, lng] = s.split(",").map(Number);
+
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        setSharedPin({ lat, lng });
+        toast({
+          title: "📍 Ubicación compartida",
+          description: `${lat.toFixed(5)}, ${lng.toFixed(5)}`,
+        });
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (loading) return;
+
+    const sp = new URLSearchParams(window.location.search);
+    const f = sp.get("focus");
+    if (!f) return;
+
+    const [kind, id] = f.split(":");
+    if (!kind || !id) return;
+
+    if (kind === "building") {
+      const b = buildings.find((x) => String(x.id) === id);
+      if (b) {
+        setDestination(null);
+        setDestBuilding(b);
+        setDestLandmark(null);
+        setExitMode(false);
+        toast({
+          title: "📌 " + b.name,
+          description: "Trazando ruta desde la notificación",
+        });
+      }
+    } else if (kind === "room") {
+      const r = rooms.find((x) => String(x.id) === id);
+      if (r) {
+        setDestination(r);
+        setDestBuilding(null);
+        setDestLandmark(null);
+        setExitMode(false);
+        toast({
+          title: "📌 " + r.name,
+          description: "Trazando ruta desde la notificación",
+        });
+      }
+    } else if (kind === "landmark") {
+      const l = landmarks.find((x) => String(x.id) === id);
+      if (l) {
+        setDestination(null);
+        setDestBuilding(null);
+        setDestLandmark(l);
+        setExitMode(false);
+        toast({
+          title: "📌 " + l.name,
+          description: "Trazando ruta desde la notificación",
+        });
+      }
+    }
+
+    const url = new URL(window.location.href);
+    url.searchParams.delete("focus");
+    window.history.replaceState({}, "", url.toString());
+  }, [loading, buildings, rooms, landmarks]);
+
   const loadUserProfile = async (userId: string | undefined) => {
     if (!userId) {
       setRole("public");
@@ -156,9 +358,12 @@ export default function Index() {
     }
 
     try {
-      const { data: roleData } = await (supabase as any).rpc("get_user_effective_role", {
-        _user_id: userId,
-      });
+      const { data: roleData } = await (supabase as any).rpc(
+        "get_user_effective_role",
+        {
+          _user_id: userId,
+        },
+      );
 
       setRole((roleData as string) ?? "public");
 
@@ -187,14 +392,13 @@ export default function Index() {
       setHasSession(!!s);
       loadUserProfile(s?.user.id);
     });
+
     return () => sub.subscription.unsubscribe();
   }, []);
 
   const canAccessAdmin = ["admin", "operator", "superadmin"].includes(role);
-
   const isStudent = profile?.user_type === "estudiante";
 
-  // Para el público, ocultamos lo no operativo (cerrado / mantenimiento) tanto en mapa como en routing.
   const isOp = (s?: string | null) => !s || s === "active";
 
   const visibleBuildings = useMemo(
@@ -214,7 +418,9 @@ export default function Index() {
   const visibleParkings = useMemo(
     () =>
       parkings.filter((p) => {
-        const audiences = (p as any).target_audiences ?? [(p as any).target_audience ?? "public"];
+        const audiences = (p as any).target_audiences ?? [
+          (p as any).target_audience ?? "public",
+        ];
 
         return (
           (p as any).is_active !== false &&
@@ -237,6 +443,7 @@ export default function Index() {
           (e as any).is_active !== false &&
           isOp(e.status) &&
           ((e as any).direction === "entry" ||
+            (e as any).direction === "exit" ||
             (e as any).direction === "both" ||
             (e as any).direction == null),
       ),
@@ -246,9 +453,7 @@ export default function Index() {
   const visibleCampusEnts = useMemo(
     () =>
       campusEntrances.filter(
-        (c) =>
-          c.is_active !== false &&
-          isOp(c.status),
+        (c) => c.is_active !== false && isOp(c.status),
       ),
     [campusEntrances],
   );
@@ -266,15 +471,29 @@ export default function Index() {
   );
 
   const gpsOrigin = position ?? UNEMI_CENTER;
-  const routeOriginInfo = useMemo(
-    () => resolveOriginFromBuildingExit({
-      origin: gpsOrigin,
-      buildings: visibleBuildings,
-      entrances: visibleEntrances,
-      mode,
-    }),
+
+  const buildingDoorOriginInfo = useMemo(
+    () =>
+      resolveOriginThroughBuildingDoor({
+        origin: gpsOrigin,
+        buildings: visibleBuildings,
+        entrances: visibleEntrances,
+        mode,
+      }),
     [gpsOrigin, visibleBuildings, visibleEntrances, mode],
   );
+
+  const routeOriginInfo = useMemo(
+    () =>
+      resolveOriginFromBuildingExit({
+        origin: buildingDoorOriginInfo.origin,
+        buildings: visibleBuildings,
+        entrances: visibleEntrances,
+        mode,
+      }),
+    [buildingDoorOriginInfo.origin, visibleBuildings, visibleEntrances, mode],
+  );
+
   const origin = routeOriginInfo.origin;
 
   const sortedVisibleLandmarks = useMemo(() => {
@@ -284,51 +503,88 @@ export default function Index() {
       return da - db;
     });
   }, [visibleLandmarks, origin]);
-  // Si el usuario está fuera del campus, ruteamos primero hasta la entrada
-  // peatonal o vehicular más cercana (ignorando salidas) y desde ahí al destino.
+
   const outside = useMemo(
     () => isOutsideCampus(origin, visibleBuildings),
     [origin, visibleBuildings],
   );
 
-  // Entrada al campus seleccionada (si estamos fuera) — sirve para pedir
-  // el tramo de calles públicas a OSRM.
   const bestCampusEntry = useMemo(
-    () => (outside ? pickBestCampusEntry({ origin, campusEntrances: visibleCampusEnts, mode }) : null),
+    () =>
+      outside
+        ? pickBestCampusEntry({
+            origin,
+            campusEntrances: visibleCampusEnts,
+            mode,
+          })
+        : null,
     [outside, origin, visibleCampusEnts, mode],
   );
+
   const streetApproach = useStreetApproach(
     outside,
     outside ? origin : null,
-    bestCampusEntry ? { lat: bestCampusEntry.lat, lng: bestCampusEntry.lng } : null,
+    bestCampusEntry
+      ? { lat: bestCampusEntry.lat, lng: bestCampusEntry.lng }
+      : null,
     mode,
   );
 
   const arrival = useMemo<ArrivalGuide | null>(() => {
     if (!destination) return null;
+
     const b = visibleBuildings.find((bb) => bb.id === destination.building_id);
     if (!b) return null;
+
     const guide = routeToRoomDestination({
-      origin, room: destination, building: b, floors,
-      entrances: visibleEntrances, paths: visiblePaths, mode,
+      origin,
+      room: destination,
+      building: b,
+      floors,
+      entrances: visibleEntrances,
+      paths: visiblePaths,
+      mode,
       buildings: visibleBuildings,
     });
+
     if (outside) {
-      const best = pickBestEntrance({ origin, building: b, entrances: visibleEntrances, mode });
+      const best = pickBestEntrance({
+        origin,
+        building: b,
+        entrances: visibleEntrances,
+        mode,
+      });
+
       const target = best
         ? { lat: best.lat, lng: best.lng }
         : { lat: b.centroid_lat, lng: b.centroid_lng };
+
       const via = routeViaCampusEntry({
-        origin, destination: target,
+        origin,
+        destination: target,
         campusEntrances: visibleCampusEnts,
-        paths: visiblePaths, mode,
+        paths: visiblePaths,
+        mode,
         obstacles: visibleBuildings.filter((x) => x.id !== b.id),
         streetApproach,
       });
+
       if (via) return { ...guide, exteriorRoute: via.route };
     }
+
     return guide;
-  }, [destination, visibleBuildings, floors, visibleEntrances, visiblePaths, visibleCampusEnts, origin, mode, outside, streetApproach]);
+  }, [
+    destination,
+    visibleBuildings,
+    floors,
+    visibleEntrances,
+    visiblePaths,
+    visibleCampusEnts,
+    origin,
+    mode,
+    outside,
+    streetApproach,
+  ]);
 
   const buildingRoute = useMemo<RouteResult | null>(() => {
     if (exitMode) {
@@ -365,130 +621,332 @@ export default function Index() {
 
       return bestRoute;
     }
+
     if (destination) return arrival?.exteriorRoute ?? null;
+
     if (destBuilding) {
-      const best = pickBestEntrance({ origin, building: destBuilding, entrances: visibleEntrances, mode });
+      const best = pickBestEntrance({
+        origin,
+        building: destBuilding,
+        entrances: visibleEntrances,
+        mode,
+      });
+
       const target = best
         ? { lat: best.lat, lng: best.lng }
         : { lat: destBuilding.centroid_lat, lng: destBuilding.centroid_lng };
+
       const obstacles = visibleBuildings.filter((b) => b.id !== destBuilding.id);
+
       if (outside) {
         const via = routeViaCampusEntry({
-          origin, destination: target,
+          origin,
+          destination: target,
           campusEntrances: visibleCampusEnts,
-          paths: visiblePaths, mode, obstacles,
+          paths: visiblePaths,
+          mode,
+          obstacles,
           streetApproach,
         });
+
         if (via) return via.route;
       }
+
       return computeRoute(visiblePaths, origin, target, mode, obstacles);
     }
+
     if (destLandmark) {
       const target = { lat: destLandmark.lat, lng: destLandmark.lng };
+
       if (outside) {
         const via = routeViaCampusEntry({
-          origin, destination: target,
+          origin,
+          destination: target,
           campusEntrances: visibleCampusEnts,
-          paths: visiblePaths, mode, obstacles: visibleBuildings,
+          paths: visiblePaths,
+          mode,
+          obstacles: visibleBuildings,
           streetApproach,
         });
+
         if (via) return via.route;
       }
+
+      return computeRoute(visiblePaths, origin, target, mode, visibleBuildings);
+    }
+
+    if (destParking) {
+      const target = {
+        lat: destParking.centroid_lat,
+        lng: destParking.centroid_lng,
+      };
+
+      if (outside) {
+        const via = routeViaCampusEntry({
+          origin,
+          destination: target,
+          campusEntrances: visibleCampusEnts,
+          paths: visiblePaths,
+          mode,
+          obstacles: visibleBuildings,
+          streetApproach,
+        });
+
+        if (via) return via.route;
+      }
+
       return computeRoute(visiblePaths, origin, target, mode, visibleBuildings);
     }
     return null;
-  }, [exitMode, destination, destBuilding, destLandmark, visiblePaths, visibleEntrances, visibleBuildings, visibleCampusEnts, origin, mode, arrival, outside, streetApproach]);
+  }, [
+    exitMode,
+    destination,
+    destBuilding,
+    destLandmark,
+    destParking,
+    visiblePaths,
+    visibleEntrances,
+    visibleBuildings,
+    visibleCampusEnts,
+    origin,
+    mode,
+    arrival,
+    outside,
+    streetApproach,
+  ]);
+
+  const routeWithBuildingExit = useMemo<RouteResult | null>(() => {
+    if (!buildingRoute) return null;
+
+    if (
+      !buildingDoorOriginInfo.isInsideBuilding ||
+      !buildingDoorOriginInfo.forcedDoor
+    ) {
+      return buildingRoute;
+    }
+
+    const door = buildingDoorOriginInfo.forcedDoor;
+    const blockName = buildingDoorOriginInfo.building?.name ?? "el bloque actual";
+
+    const exitStep = {
+      instruction: `Sal de ${blockName} por la puerta de ingreso habilitada más cercana.`,
+      lat: door.lat,
+      lng: door.lng,
+    };
+
+    return {
+      ...buildingRoute,
+      steps: [exitStep, ...buildingRoute.steps],
+    };
+  }, [buildingRoute, buildingDoorOriginInfo]);
+
+  const routeWithStreetNames = useMemo<RouteResult | null>(() => {
+    const baseRoute = routeWithBuildingExit ?? buildingRoute;
+
+    if (!baseRoute) return null;
+    if (!outside || !streetApproach) return baseRoute;
+
+    const streetSteps =
+      (streetApproach as any)?.steps ??
+      (streetApproach as any)?.route?.steps ??
+      (streetApproach as any)?.legs?.[0]?.steps ??
+      [];
+
+    if (!Array.isArray(streetSteps) || streetSteps.length === 0) {
+      return baseRoute;
+    }
+
+    const namedStreetSteps = streetSteps
+      .map((s: any) => {
+        const name =
+          s.name ||
+          s.street ||
+          s.road ||
+          s.ref ||
+          s.maneuver?.street_name ||
+          "calle sin nombre";
+
+        const instruction =
+          s.instruction ||
+          s.maneuver?.instruction ||
+          `Continúa por ${name}`;
+
+        const location = s.location ?? s.maneuver?.location;
+
+        return {
+          instruction:
+            name && name !== "calle sin nombre"
+              ? `${instruction}. Referencia: ${name}`
+              : instruction,
+          lat: Array.isArray(location) ? location[1] : baseRoute.steps[0]?.lat,
+          lng: Array.isArray(location) ? location[0] : baseRoute.steps[0]?.lng,
+        };
+      })
+      .filter((s: any) => Number.isFinite(s.lat) && Number.isFinite(s.lng));
+
+    if (!namedStreetSteps.length) return baseRoute;
+
+    return {
+      ...baseRoute,
+      steps: [...namedStreetSteps, ...baseRoute.steps],
+    };
+  }, [buildingRoute, routeWithBuildingExit, outside, streetApproach]);
+
+  const routeForRender = routeWithStreetNames ?? routeWithBuildingExit ?? buildingRoute;
 
   useEffect(() => {
     if (!arrival || !position) return;
+
     const last = arrival.exteriorRoute.coords[arrival.exteriorRoute.coords.length - 1];
+
     if (haversine(position, last) < ARRIVAL_THRESHOLD_M) {
       if (!arrived) {
         setArrived(true);
+
         if (voice) {
-          speak(`${arrival.arrivalInstruction} ${arrival.indoorInstruction ?? ""}`, { force: true });
+          speak(`${arrival.arrivalInstruction} ${arrival.indoorInstruction ?? ""}`, {
+            force: true,
+          });
         }
       }
     }
   }, [position, arrival, arrived, voice]);
 
-  // Anuncio inicial al fijar una ruta (solo cuando se inicia la navegación)
   useEffect(() => {
-    if (!voice || arrived || !buildingRoute || navMode !== "navigating") return;
-    if (!destination && !destBuilding && !destLandmark) return;
-    const target = destination?.name ?? destBuilding?.name ?? destLandmark?.name ?? "tu destino";
-    const dist = Math.round(buildingRoute.distance);
-    const first = buildingRoute.steps[0]?.instruction ?? "Comienza tu recorrido.";
-    speak(`Iniciando ruta hacia ${target}. Distancia ${dist} metros. ${first}`, { force: true });
+    if (!voice || arrived || !routeForRender || navMode !== "navigating") return;
+    if (!destination && !destBuilding && !destLandmark && !destParking && !exitMode) return;
+
+    const target =
+      destination?.name ??
+      destBuilding?.name ??
+      destLandmark?.name ??
+      destParking?.name ??
+      (exitMode ? "salida del campus" : "tu destino");
+
+    const dist = Math.round(routeForRender.distance);
+    const first = routeForRender.steps[0]?.instruction ?? "Comienza tu recorrido.";
+
+    speak(`Iniciando ruta hacia ${target}. Distancia ${dist} metros. ${first}`, {
+      force: true,
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navMode]);
 
-  // Avance automático del paso actual según proximidad GPS (solo navegando)
   useEffect(() => {
-    if (arrived || !buildingRoute || !position || navMode !== "navigating") return;
-    const steps = buildingRoute.steps;
+    if (arrived || !routeForRender || !position || navMode !== "navigating") return;
+
+    const steps = routeForRender.steps;
     if (!steps.length) return;
+
     const current = steps[stepIndex];
     if (!current) return;
+
     if (haversine(position, { lat: current.lat, lng: current.lng }) < 15) {
       const nextIdx = Math.min(stepIndex + 1, steps.length - 1);
+
       if (nextIdx !== stepIndex) {
         setStepIndex(nextIdx);
+
         if (voice) speak(steps[nextIdx].instruction);
       }
     }
-  }, [position, buildingRoute, voice, arrived, stepIndex, navMode]);
+  }, [position, routeForRender, voice, arrived, stepIndex, navMode]);
 
-  // Encuadrar ruta automáticamente al entrar a preview
   useEffect(() => {
-    if (!buildingRoute || navMode !== "preview") return;
+    if (!routeForRender || navMode !== "preview") return;
     setFitRouteToken((t) => t + 1);
-  }, [buildingRoute, navMode]);
+  }, [routeForRender, navMode]);
 
   const announceSelection = (name: string) => {
     if (!voice) return;
+
     primeSpeech();
     speak(`Calculando ruta hacia ${name}.`, { force: true });
   };
-  const resetRoute = () => { setArrived(false); setStepIndex(0); setNavMode("preview"); };
+
+  const resetRoute = () => {
+    setArrived(false);
+    setStepIndex(0);
+    setNavMode("preview");
+  };
+
   const handleSelectRoom = (r: MapRoom) => {
-    setDestination(r); setDestBuilding(null); setDestLandmark(null); resetRoute();
+    setDestination(r);
+    setDestBuilding(null);
+    setDestLandmark(null);
+    setDestParking(null);
+    setExitMode(false);
+    resetRoute();
     announceSelection(r.name);
   };
+
   const handleSelectBuilding = (b: MapBuilding) => {
-    setDestination(null); setDestBuilding(b); setDestLandmark(null); resetRoute();
+    setDestination(null);
+    setDestBuilding(b);
+    setDestLandmark(null);
+    setDestParking(null);
+    setExitMode(false);
+    resetRoute();
     announceSelection(b.name);
   };
+
   const handleSelectLandmark = (l: import("@/types/map").MapLandmark) => {
-    setDestination(null); setDestBuilding(null); setDestLandmark(l); resetRoute();
+    setDestination(null);
+    setDestBuilding(null);
+    setDestLandmark(l);
+    setDestParking(null);
+    setExitMode(false);
+    resetRoute();
     announceSelection(l.name);
   };
+
   const handleSelectExit = () => {
     setDestination(null);
     setDestBuilding(null);
     setDestLandmark(null);
+    setDestParking(null);
     setExitMode(true);
     resetRoute();
     announceSelection("salida del campus");
   };
+
   const handleClose = () => {
-    setDestination(null); setDestBuilding(null); setDestLandmark(null);
-    resetRoute(); stopSpeaking(); setExitMode(false);
+    setDestination(null);
+    setDestBuilding(null);
+    setDestLandmark(null);
+    setExitMode(false);
+    resetRoute();
+    stopSpeaking();
+    setDestParking(null);
   };
+
   const handleStartNavigation = () => {
     setNavMode("navigating");
     setRecenterToken((t) => t + 1);
   };
+
   const handleRecenter = () => setRecenterToken((t) => t + 1);
 
   const shareMyLocation = async () => {
     const p = position;
+
     if (!p) {
-      toast({ title: "Sin ubicación GPS", description: "Activa el GPS para compartir tu ubicación.", variant: "destructive" });
+      toast({
+        title: "Sin ubicación GPS",
+        description: "Activa el GPS para compartir tu ubicación.",
+        variant: "destructive",
+      });
       return;
     }
+
     const url = `${window.location.origin}/?share=${p.lat.toFixed(6)},${p.lng.toFixed(6)}`;
-    const shareData = { title: "Mi ubicación en UNEMI", text: "Estoy aquí en el campus", url };
+
+    const shareData = {
+      title: "Mi ubicación en UNEMI",
+      text: "Estoy aquí en el campus",
+      url,
+    };
+
     try {
       if (navigator.share && navigator.canShare?.(shareData)) {
         await navigator.share(shareData);
@@ -496,80 +954,140 @@ export default function Index() {
         await navigator.clipboard.writeText(url);
         toast({ title: "🔗 Enlace copiado", description: url });
       }
-    } catch { /* user cancelled */ }
+    } catch {
+      // usuario canceló
+    }
   };
 
   const installApp = async () => {
     if (!installPrompt) {
       toast({
         title: "Instalación no disponible",
-        description: "En iOS: usa Compartir → Agregar a pantalla de inicio. En desktop: ícono de instalación de la barra de direcciones.",
+        description:
+          "En iOS: usa Compartir → Agregar a pantalla de inicio. En desktop: ícono de instalación de la barra de direcciones.",
       });
       return;
     }
+
     installPrompt.prompt();
+
     const { outcome } = await installPrompt.userChoice;
+
     if (outcome === "accepted") toast({ title: "✅ App instalada" });
+
     setInstallPrompt(null);
   };
 
-  const hasActiveRoute = !!(destination || destBuilding || destLandmark || exitMode);
-  const activeDestinationName =
-    exitMode
-      ? "Salida del campus"
-      : destination?.name ?? destBuilding?.name ?? destLandmark?.name ?? "tu destino";
+  const hasActiveRoute = !!(destination || destBuilding || destLandmark || destParking || exitMode);
+
+  const activeDestinationName = exitMode
+    ? "Salida del campus"
+    : destination?.name ??
+      destBuilding?.name ??
+      destLandmark?.name ??
+      destParking?.name ??
+      "tu destino";
+
+  const handleSelectParking = (p: any) => {
+    setDestination(null);
+    setDestBuilding(null);
+    setDestLandmark(null);
+    setDestParking(p);
+    setExitMode(false);
+    resetRoute();
+    announceSelection(p.name ?? "parqueadero");
+  };
+
   const remainingDistance = useMemo(() => {
-    if (!buildingRoute || !position) return buildingRoute?.distance ?? 0;
-    const coords = buildingRoute.coords;
+    if (!routeForRender || !position) return routeForRender?.distance ?? 0;
+
+    const coords = routeForRender.coords;
+
     let total = 0;
     let nearestIdx = 0;
     let nearestDist = Infinity;
+
     for (let i = 0; i < coords.length; i++) {
       const d = haversine(position, coords[i]);
-      if (d < nearestDist) { nearestDist = d; nearestIdx = i; }
+
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearestIdx = i;
+      }
     }
+
     total += nearestDist;
+
     for (let i = nearestIdx; i < coords.length - 1; i++) {
       total += haversine(coords[i], coords[i + 1]);
     }
+
     return total;
-  }, [buildingRoute, position]);
+  }, [routeForRender, position]);
 
   const remainingDuration = useMemo(() => {
-    if (!buildingRoute) return 0;
-    const speed = mode === "vehicle" ? 8 : 1.4; // m/s aproximados
-    if (!buildingRoute.distance) return buildingRoute.duration ?? 0;
+    if (!routeForRender) return 0;
+
+    const speed = mode === "vehicle" ? 8 : 1.4;
+
+    if (!routeForRender.distance) return routeForRender.duration ?? 0;
+
     return remainingDistance / speed;
-  }, [remainingDistance, buildingRoute, mode]);
+  }, [remainingDistance, routeForRender, mode]);
 
   const isNavigating = hasActiveRoute && navMode === "navigating";
   const isPreviewing = hasActiveRoute && navMode === "preview";
+
   const previewDestinationCode =
-    destination?.code ?? destBuilding?.code ?? null;
+    destination?.code ??
+    destBuilding?.code ??
+    (destParking ? "Parqueadero" : null);
 
   const snappedUser = useMemo(
-    () => nearestPointOnRoute(position, isNavigating ? buildingRoute : null),
-    [position, buildingRoute, isNavigating],
+    () => nearestPointOnRoute(position, isNavigating ? routeForRender : null),
+    [position, routeForRender, isNavigating],
   );
 
   const routeBearing = useMemo(() => {
-    if (!buildingRoute?.coords?.length || !position) return heading;
+    if (!routeForRender?.coords?.length) return heading ?? 0;
 
-    const coords = buildingRoute.coords;
-    let nearestIdx = 0;
-    let best = Infinity;
+    const coords = routeForRender.coords;
 
-    coords.forEach((p, i) => {
-      const d = haversine(position, p);
-      if (d < best) {
-        best = d;
-        nearestIdx = i;
+    let startIndex = 0;
+
+    if (position) {
+      let best = Infinity;
+
+      coords.forEach((p, i) => {
+        const d = haversine(position, p);
+
+        if (d < best) {
+          best = d;
+          startIndex = i;
+        }
+      });
+    }
+
+    for (let i = startIndex; i < coords.length - 1; i++) {
+      const a = coords[i];
+      const b = coords[i + 1];
+
+      if (haversine(a, b) >= 2) {
+        return bearingBetween(a, b);
       }
-    });
+    }
 
-    const next = coords[Math.min(nearestIdx + 1, coords.length - 1)];
-    return next ? bearingBetween(coords[nearestIdx], next) : heading;
-  }, [buildingRoute, position, heading]);
+    for (let i = 0; i < coords.length - 1; i++) {
+      const a = coords[i];
+      const b = coords[i + 1];
+
+      if (haversine(a, b) >= 2) {
+        return bearingBetween(a, b);
+      }
+    }
+
+    return heading ?? 0;
+  }, [routeForRender, position, heading]);
 
   const goToMyClass = async () => {
     if (!profile?.cedula) {
@@ -583,7 +1101,6 @@ export default function Index() {
 
     try {
       setLoadingClassRoute(true);
-
       setClassRouteMessage(null);
 
       const documento = String(profile.cedula).replace(/\D/g, "");
@@ -629,7 +1146,8 @@ export default function Index() {
         setClassRouteMessage({
           type: "warning",
           title: "Aula no determinada",
-          description: "El sistema académico no devolvió un aula específica para tu clase actual.",
+          description:
+            "El sistema académico no devolvió un aula específica para tu clase actual.",
         });
         return;
       }
@@ -671,7 +1189,6 @@ export default function Index() {
       }
 
       setClassRouteMessage(null);
-
       handleSelectRoom(room);
 
       toast({
@@ -701,10 +1218,10 @@ export default function Index() {
         user={snappedUser}
         userAccuracy={accuracy}
         userMode={mode}
-        userBearing={routeBearing}
+        userBearing={isNavigating && !arrived ? routeBearing : heading}
         followUser={isNavigating && !arrived}
         rotateWithHeading={isNavigating && !arrived}
-        route={buildingRoute}
+        route={routeForRender}
         sharedPin={sharedPin}
         onBuildingClick={handleSelectBuilding}
         recenterToken={recenterToken}
@@ -712,104 +1229,138 @@ export default function Index() {
         className="absolute inset-0"
       />
 
-      {/* Botón flotante para volver a centrar el mapa en el usuario */}
-      {position && (
-        <div className="absolute right-3 bottom-24 sm:bottom-28 z-[1100] flex flex-col items-end gap-2">
-          {needsCompassPermission && (
-            <button
-              onClick={enableCompass}
-              className="rounded-full bg-primary text-primary-foreground px-3 py-1.5 text-[11px] font-semibold shadow-[var(--shadow-card)] active:scale-95 transition"
+      <div className="absolute right-3 top-3 z-[1200] pointer-events-auto">
+        <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
+          <SheetTrigger asChild>
+            <Button
+              size="icon"
+              variant="default"
+              className="h-14 w-14 rounded-2xl bg-primary text-primary-foreground shadow-xl"
+              title="Abrir menú del mapa"
+              aria-label="Abrir menú del mapa"
             >
-              🧭 Activar brújula
-            </button>
-          )}
-          {accuracy != null && accuracy > 30 && (
-            <div className="rounded-full bg-card/95 backdrop-blur px-3 py-1 text-[11px] font-medium shadow-[var(--shadow-card)] border border-border/50">
-              <span className={accuracy > 60 ? "text-destructive" : "text-amber-600"}>
-                GPS ±{Math.round(accuracy)} m
-              </span>
-              {accuracy > 60 && <span className="text-muted-foreground"> · sal al exterior</span>}
-            </div>
-          )}
-          <RecenterFab onClick={handleRecenter} rotated={isNavigating} />
-        </div>
-      )}
+              <Menu className="h-7 w-7" />
+            </Button>
+          </SheetTrigger>
 
-      {/* Cabecera + buscador (se ocultan cuando hay ruta activa) */}
-      {!hasActiveRoute && (
-        <header className="absolute top-0 inset-x-0 z-[1000] p-3 sm:p-4 pointer-events-none">
-          <div className="max-w-2xl mx-auto pointer-events-auto">
-            <div className="flex items-center gap-2 mb-3 flex-wrap">
-              <div className="flex items-center gap-2 rounded-full bg-card/95 backdrop-blur px-3 py-1.5 shadow-[var(--shadow-card)]">
-                <TigrilloGuide size={32} />
-                <div className="leading-tight">
-                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Mapa Institucional</p>
-                  <p className="text-sm font-bold">UNEMI</p>
-                </div>
-              </div>
-              <div className="flex-1" />
-              <Button variant="secondary" size="sm" className="rounded-full shadow-[var(--shadow-card)] gap-1"
-                onClick={shareMyLocation} title="Compartir mi ubicación">
-                <Share2 className="h-4 w-4" /> Compartir
+          <SheetContent
+            side="right"
+            className="w-[310px] sm:w-[360px] pt-[calc(env(safe-area-inset-top)+1.5rem)]"
+          >
+            <SheetHeader>
+              <SheetTitle>Mapa UNEMI</SheetTitle>
+            </SheetHeader>
+
+            <div className="mt-6 space-y-3">
+              <Button variant="outline" className="w-full justify-start" onClick={shareMyLocation}>
+                <Share2 className="mr-2 h-4 w-4" />
+                Compartir ubicación
               </Button>
 
               {hasSession && isStudent && (
                 <Button
-                  variant="default"
-                  size="sm"
-                  className="rounded-full shadow-[var(--shadow-card)] gap-1"
+                  className="w-full justify-start"
                   onClick={goToMyClass}
                   disabled={loadingClassRoute || loading}
-                  title="Ir a mi clase"
                 >
                   {loadingClassRoute ? (
-                    <>
-                      <Search className="h-4 w-4 animate-spin" />
-                      Buscando aula
-                    </>
+                    <Search className="mr-2 h-4 w-4 animate-spin" />
                   ) : (
-                    <>
-                      <School className="h-4 w-4" />
-                      Ir a mi clase
-                    </>
+                    <School className="mr-2 h-4 w-4" />
                   )}
+                  Ir a mi clase
                 </Button>
               )}
 
-              {installPrompt && (
-                <Button variant="default" size="sm" className="rounded-full shadow-[var(--shadow-card)] gap-1"
-                  onClick={installApp}>
-                  <Download className="h-4 w-4" /> Instalar
-                </Button>
-              )}
+              <Button variant="outline" className="w-full justify-start" onClick={installApp}>
+                <Download className="mr-2 h-4 w-4" />
+                Instalar aplicación
+              </Button>
+
               {hasSession && canAccessAdmin && (
                 <Link to="/admin">
-                  <Button variant="secondary" size="sm" className="rounded-full shadow-[var(--shadow-card)] gap-1">
-                    <LayoutDashboard className="h-4 w-4" /> Panel
+                  <Button variant="outline" className="w-full justify-start">
+                    <LayoutDashboard className="mr-2 h-4 w-4" />
+                    Panel administrativo
                   </Button>
                 </Link>
               )}
+
               {!hasSession && (
                 <Link to="/auth">
-                  <Button variant="secondary" size="sm" className="rounded-full shadow-[var(--shadow-card)] gap-1">
-                    <LogIn className="h-4 w-4" /> Iniciar sesión
+                  <Button variant="outline" className="w-full justify-start">
+                    <LogIn className="mr-2 h-4 w-4" />
+                    Iniciar sesión
                   </Button>
                 </Link>
               )}
+
               {hasSession && !canAccessAdmin && (
-                <Button variant="ghost" size="sm" className="rounded-full shadow-[var(--shadow-card)] gap-1"
+                <Button
+                  variant="destructive"
+                  className="w-full justify-start"
                   onClick={async () => {
-                    if (window.confirm("¿Cerrar sesión?")) await supabase.auth.signOut();
-                  }}>
-                  <LogIn className="h-4 w-4" /> Salir
+                    if (window.confirm("¿Cerrar sesión?")) {
+                      await supabase.auth.signOut();
+                    }
+                  }}
+                >
+                  <LogIn className="mr-2 h-4 w-4" />
+                  Cerrar sesión
                 </Button>
               )}
+            </div>
+          </SheetContent>
+        </Sheet>
+      </div>
+
+      {position && (
+        <div className="absolute right-3 bottom-24 z-[1100] flex flex-col items-end gap-2 sm:bottom-28">
+          {needsCompassPermission && (
+            <button
+              onClick={enableCompass}
+              className="rounded-full bg-primary px-3 py-1.5 text-[11px] font-semibold text-primary-foreground shadow-[var(--shadow-card)] transition active:scale-95"
+            >
+              🧭 Activar brújula
+            </button>
+          )}
+
+          {accuracy != null && accuracy > 30 && (
+            <div className="rounded-full border border-border/50 bg-card/95 px-3 py-1 text-[11px] font-medium shadow-[var(--shadow-card)] backdrop-blur">
+              <span className={accuracy > 60 ? "text-destructive" : "text-amber-600"}>
+                GPS ±{Math.round(accuracy)} m
+              </span>
+
+              {accuracy > 60 && (
+                <span className="text-muted-foreground"> · sal al exterior</span>
+              )}
+            </div>
+          )}
+
+          <RecenterFab onClick={handleRecenter} rotated={isNavigating} />
+        </div>
+      )}
+
+      {!hasActiveRoute && !menuOpen && (
+        <header className="pointer-events-none absolute inset-x-0 top-0 z-[1000] p-3 sm:p-4">
+          <div className="pointer-events-auto mx-auto max-w-2xl">
+            <div className="mb-3 flex items-center gap-2">
+              <div className="flex items-center gap-2 rounded-full bg-card/95 px-3 py-1.5 shadow-[var(--shadow-card)] backdrop-blur">
+                <TigrilloGuide size={32} />
+
+                <div className="leading-tight">
+                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Mapa Institucional
+                  </p>
+                  <p className="text-sm font-bold">UNEMI</p>
+                </div>
+              </div>
             </div>
 
             {classRouteMessage && (
               <div
                 className={[
-                  "mb-3 rounded-2xl border p-3 shadow-[var(--shadow-card)] backdrop-blur bg-card/95",
+                  "mb-3 rounded-2xl border bg-card/95 p-3 shadow-[var(--shadow-card)] backdrop-blur",
                   classRouteMessage.type === "error"
                     ? "border-destructive/40 text-destructive"
                     : "border-amber-300 text-amber-800",
@@ -822,7 +1373,9 @@ export default function Index() {
 
                   <div className="flex-1">
                     <p className="text-sm font-bold">{classRouteMessage.title}</p>
-                    <p className="text-xs opacity-80">{classRouteMessage.description}</p>
+                    <p className="text-xs opacity-80">
+                      {classRouteMessage.description}
+                    </p>
                   </div>
 
                   <button
@@ -837,18 +1390,24 @@ export default function Index() {
             )}
 
             <SearchPanel
-              rooms={rooms.filter((r) => visibleBuildings.some((b) => b.id === r.building_id))}
+              rooms={rooms.filter((r) =>
+                visibleBuildings.some((b) => b.id === r.building_id),
+              )}
               buildings={visibleBuildings}
               landmarks={sortedVisibleLandmarks}
+              parkings={visibleParkings}
               onSelectRoom={handleSelectRoom}
               onSelectBuilding={handleSelectBuilding}
               onSelectLandmark={handleSelectLandmark}
+              onSelectParking={handleSelectParking}
               onSelectExit={handleSelectExit}
             />
 
             {(error || gpsError) && (
-              <div className="mt-2 rounded-lg bg-destructive/10 border border-destructive/30 p-2 text-xs text-destructive">
-                {error && <p>📡 {error}. Ejecuta los SQL de /database en tu Supabase.</p>}
+              <div className="mt-2 rounded-lg border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
+                {error && (
+                  <p>📡 {error}. Ejecuta los SQL de /database en tu Supabase.</p>
+                )}
                 {gpsError && <p>📍 GPS: {gpsError}</p>}
               </div>
             )}
@@ -856,17 +1415,19 @@ export default function Index() {
         </header>
       )}
 
-      {/* Vista previa (estilo Google Maps): ruta + ETA + indicaciones + botón Iniciar */}
-      {isPreviewing && buildingRoute && (
-        <div className="absolute bottom-0 inset-x-0 z-[1000] p-2 sm:p-3 pointer-events-none">
-          <div className="max-w-2xl mx-auto max-h-[72vh] overflow-y-auto overscroll-contain pointer-events-auto rounded-3xl pb-3">
+      {isPreviewing && routeForRender && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-[calc(env(safe-area-inset-bottom)+1rem)] z-[1000] p-2 sm:p-3">
+          <div className="pointer-events-auto mx-auto max-h-[calc(100dvh-7rem)] max-w-2xl overflow-y-auto overscroll-contain rounded-3xl pb-6">
             <RoutePreview
               destinationName={activeDestinationName}
               destinationCode={previewDestinationCode}
-              route={buildingRoute}
+              route={routeForRender}
               arrival={arrival}
               mode={mode}
-              onChangeMode={(m) => { setMode(m); resetRoute(); }}
+              onChangeMode={(m) => {
+                setMode(m);
+                resetRoute();
+              }}
               onStart={handleStartNavigation}
               onClose={handleClose}
             />
@@ -874,19 +1435,18 @@ export default function Index() {
         </div>
       )}
 
-      {/* Indicación flotante paso a paso (modo navegación activa) */}
-      {isNavigating && buildingRoute && (
-        <div className="absolute top-0 inset-x-0 z-[1000] p-3 sm:p-4 pointer-events-none">
-          <div className="max-w-xl mx-auto">
+      {isNavigating && routeForRender && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-[1000] p-3 sm:p-4">
+          <div className="mx-auto max-w-xl">
             <StepFloating
-              step={buildingRoute.steps[stepIndex] ?? null}
+              step={routeForRender.steps[stepIndex] ?? null}
               stepIndex={stepIndex}
-              totalSteps={buildingRoute.steps.length}
+              totalSteps={routeForRender.steps.length}
               distanceToStep={
-                position && buildingRoute.steps[stepIndex]
+                position && routeForRender.steps[stepIndex]
                   ? haversine(position, {
-                      lat: buildingRoute.steps[stepIndex].lat,
-                      lng: buildingRoute.steps[stepIndex].lng,
+                      lat: routeForRender.steps[stepIndex].lat,
+                      lng: routeForRender.steps[stepIndex].lng,
                     })
                   : null
               }
@@ -896,39 +1456,82 @@ export default function Index() {
               arrived={arrived}
               arrivalText={arrival?.arrivalInstruction ?? null}
               voice={voice}
-              onToggleVoice={() => { setVoice((v) => !v); if (voice) stopSpeaking(); }}
+              onToggleVoice={() => {
+                setVoice((v) => !v);
+                if (voice) stopSpeaking();
+              }}
               onClose={handleClose}
               mode={mode}
-              onChangeMode={(m) => { setMode(m); resetRoute(); }}
+              onChangeMode={(m) => {
+                setMode(m);
+                resetRoute();
+              }}
             />
           </div>
         </div>
       )}
 
-      {/* Detalle de llegada (solo cuando ya llegó al destino) */}
-      {arrived && arrival && (
-        <div className="absolute bottom-0 inset-x-0 z-[1000] p-3 sm:p-4 pointer-events-none">
-          <div className="max-w-2xl mx-auto pointer-events-auto">
+      {arrived && routeForRender && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[1000] p-3 sm:p-4">
+          <div className="pointer-events-auto mx-auto max-w-2xl">
             <NavigationPanel
-              destination={destination ?? (destBuilding ? ({
-                id: destBuilding.id, name: destBuilding.name, code: destBuilding.code,
-                building_id: destBuilding.id, floor_id: null, room_type_id: null,
-                description: destBuilding.description, directions: null, image_url: destBuilding.image_url,
-                keywords: null, target_audience: destBuilding.target_audience,
-              } as MapRoom) : destLandmark ? ({
-                id: destLandmark.id, name: destLandmark.name, code: null,
-                building_id: "", floor_id: null, room_type_id: null,
-                description: destLandmark.description, directions: null, image_url: null,
-                keywords: null, target_audience: "public",
-              } as MapRoom) : null)}
-              route={buildingRoute}
-              arrival={arrival}
+              destination={
+                destination ??
+                (destBuilding
+                  ? ({
+                      id: destBuilding.id,
+                      name: destBuilding.name,
+                      code: destBuilding.code,
+                      building_id: destBuilding.id,
+                      floor_id: null,
+                      room_type_id: null,
+                      description: destBuilding.description,
+                      directions: null,
+                      image_url: destBuilding.image_url,
+                      keywords: null,
+                      target_audience: destBuilding.target_audience,
+                    } as MapRoom)
+                  : destLandmark
+                    ? ({
+                        id: destLandmark.id,
+                        name: destLandmark.name,
+                        code: null,
+                        building_id: "",
+                        floor_id: null,
+                        room_type_id: null,
+                        description: destLandmark.description,
+                        directions: null,
+                        image_url: null,
+                        keywords: null,
+                        target_audience: "public",
+                      } as MapRoom)
+                    : destParking
+                      ? ({
+                          id: destParking.id,
+                          name: destParking.name ?? "Parqueadero",
+                          code: null,
+                          building_id: "",
+                          floor_id: null,
+                          room_type_id: null,
+                          description: `Parqueadero ${destParking.type ?? ""}`,
+                          directions: null,
+                          image_url: null,
+                          keywords: null,
+                          target_audience: "public",
+                        } as MapRoom)
+                      : null)
+              }
+              route={routeForRender}
+              arrival={arrival ?? undefined}
               mode={mode}
               onChangeMode={setMode}
               onClose={handleClose}
               arrived={arrived}
               voice={voice}
-              onToggleVoice={() => { setVoice((v) => !v); if (voice) stopSpeaking(); }}
+              onToggleVoice={() => {
+                setVoice((v) => !v);
+                if (voice) stopSpeaking();
+              }}
             />
           </div>
         </div>
@@ -944,12 +1547,15 @@ export default function Index() {
       )}
 
       {!loading && buildings.length === 0 && (
-        <div className="absolute z-[1000] left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-md text-center bg-card/95 backdrop-blur p-6 rounded-2xl shadow-[var(--shadow-card)] border">
-          <MapPin className="mx-auto h-8 w-8 text-primary mb-2" />
-          <h2 className="font-bold mb-1">El campus está vacío</h2>
-          <p className="text-sm text-muted-foreground mb-3">
+        <div className="absolute left-1/2 top-1/2 z-[1000] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border bg-card/95 p-6 text-center shadow-[var(--shadow-card)] backdrop-blur">
+          <MapPin className="mx-auto mb-2 h-8 w-8 text-primary" />
+
+          <h2 className="mb-1 font-bold">El campus está vacío</h2>
+
+          <p className="mb-3 text-sm text-muted-foreground">
             Inicia sesión como administrador para dibujar edificios, calles, parqueos y aulas.
           </p>
+
           <Link to={hasSession ? "/admin" : "/auth"}>
             <Button>{hasSession ? "Ir al editor" : "Iniciar sesión"}</Button>
           </Link>
@@ -958,4 +1564,3 @@ export default function Index() {
     </div>
   );
 }
-

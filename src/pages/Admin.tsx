@@ -23,7 +23,7 @@ import { ArrowLeft, LogOut, Pencil, Trash2, MapPin, Save, X, Bell, GripVertical,
 
 type DrawTool =
   | "none"
-  | "building"        // 1 clic = punto GPS del bloque
+  | "building"        // 3+ clics = esquinas del bloque
   | "parking"         // 1 clic = punto GPS del parqueo
   | "entrance"        // 1 clic = entrada de edificio (requiere edificio sel.)
   | "campus-entry"    // 1 clic = entrada al campus
@@ -54,6 +54,46 @@ function pointBox(lat: number, lng: number, sizeM = 1) {
       [lng - dLng, lat - dLat],
     ]],
   };
+}
+
+function polygonFromPoints(points: { lat: number; lng: number }[]) {
+  const closed = [...points, points[0]];
+
+  return {
+    type: "Polygon" as const,
+    coordinates: [
+      closed.map((p) => [p.lng, p.lat]),
+    ],
+  };
+}
+
+function centroidFromPoints(points: { lat: number; lng: number }[]) {
+  const total = points.reduce(
+    (acc, p) => ({
+      lat: acc.lat + p.lat,
+      lng: acc.lng + p.lng,
+    }),
+    { lat: 0, lng: 0 },
+  );
+
+  return {
+    lat: total.lat / points.length,
+    lng: total.lng / points.length,
+  };
+}
+
+function pointsFromPolygon(geom: any): { lat: number; lng: number }[] {
+  const coords = geom?.coordinates?.[0];
+
+  if (!Array.isArray(coords)) return [];
+
+  return coords
+    .slice(0, -1) // quitamos el último porque repite el primero
+    .map(([lng, lat]: [number, number]) => ({
+      lat,
+      lng,
+    }))
+    .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
 }
 
 const PARKING_LABELS: Record<ParkingType, string> = {
@@ -132,7 +172,10 @@ export default function Admin() {
   // ====== Click en mapa ======
   const onMapClick = async (p: { lat: number; lng: number }) => {
     if (tool === "none") return;
-    if (tool === "building") return saveBuilding(p);
+    if (tool === "building") {
+      setDrawing((d) => [...d, p]);
+      return;
+    }
     if (tool === "parking") return saveParking(p);
     if (tool === "entrance") return saveBuildingEntrance(p);
     if (tool === "campus-entry") return saveCampusEntry(p);
@@ -149,22 +192,58 @@ export default function Admin() {
   };
 
   // ====== Guardado puntual (1 clic) ======
-  const saveBuilding = async (p: { lat: number; lng: number }) => {
+  const saveBuilding = async () => {
     if (!bForm.name.trim()) {
-      toast({ title: "Falta el nombre", description: "Escribe el nombre del bloque antes de marcarlo.", variant: "destructive" });
+      toast({
+        title: "Falta el nombre",
+        description: "Escribe el nombre del bloque antes de marcar sus esquinas.",
+        variant: "destructive",
+      });
       return;
     }
+
+    if (drawing.length < 3) {
+      toast({
+        title: "Faltan esquinas",
+        description: "Marca al menos 3 puntos para formar el polígono del bloque.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const centroid = centroidFromPoints(drawing);
+
     const { error } = await db.from("map_buildings").insert({
       name: bForm.name.trim(),
       code: bForm.code.trim() || null,
       description: bForm.description.trim() || null,
       floors_count: bForm.floors_count || 1,
-      geom: pointBox(p.lat, p.lng),
-      centroid_lat: p.lat, centroid_lng: p.lng,
+      geom: polygonFromPoints(drawing),
+      centroid_lat: centroid.lat,
+      centroid_lng: centroid.lng,
     });
-    if (error) return toast({ title: "Error", description: error.message, variant: "destructive" });
-    toast({ title: "Bloque creado", description: `${bForm.name} ubicado correctamente.` });
-    setBForm({ name: "", code: "", description: "", floors_count: 1 });
+
+    if (error) {
+      return toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
+
+    toast({
+      title: "Bloque creado",
+      description: `${bForm.name} creado con ${drawing.length} esquinas.`,
+    });
+
+    setBForm({
+      name: "",
+      code: "",
+      description: "",
+      floors_count: 1,
+    });
+
+    setDrawing([]);
     setTool("none");
     data.reload();
   };
@@ -320,11 +399,29 @@ export default function Admin() {
     let table = "", patch: any = {};
     if (t.kind === "building") {
       table = "map_buildings";
+
+      const vertices = pointsFromPolygon((t.data as any).geom);
+
+      if (vertices.length < 3) {
+        toast({
+          title: "Polígono inválido",
+          description: "El bloque debe tener al menos 3 esquinas.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const centroid = centroidFromPoints(vertices);
+
       patch = {
-        name: t.data.name, code: t.data.code, description: t.data.description,
-        floors_count: t.data.floors_count, status: (t.data as any).status,
-        centroid_lat: t.data.centroid_lat, centroid_lng: t.data.centroid_lng,
-        geom: pointBox(t.data.centroid_lat, t.data.centroid_lng),
+        name: t.data.name,
+        code: t.data.code,
+        description: t.data.description,
+        floors_count: t.data.floors_count,
+        status: (t.data as any).status,
+        centroid_lat: centroid.lat,
+        centroid_lng: centroid.lng,
+        geom: polygonFromPoints(vertices),
       };
     } else if (t.kind === "parking") {
       table = "map_parkings";
@@ -507,7 +604,8 @@ export default function Admin() {
 
   const drawingMode =
     tool === "path-ped" || tool === "path-veh" ? "line" :
-    tool === "building" || tool === "parking" || tool === "entrance" || tool === "campus-entry" || tool === "landmark" ? "point" :
+    tool === "building" ? "polygon" :
+    tool === "parking" || tool === "entrance" || tool === "campus-entry" || tool === "landmark" ? "point" :
     null;
 
   // El mapa debe ignorar clicks sobre features si estamos en cualquier herramienta
@@ -589,8 +687,66 @@ export default function Admin() {
                         onChange={(e) => setBForm({ ...bForm, description: e.target.value })}
                         placeholder="Aulas de Sistemas, laboratorios de cómputo…" />
                     </Field>
-                    <p className="text-xs text-primary font-medium">📍 Paso 3 — Haz clic en el mapa <i>o</i> pega las coordenadas exactas.</p>
-                    <PasteCoordInput buttonLabel="Guardar bloque aquí" onAdd={(lat, lng) => saveBuilding({ lat, lng })} />
+                    <p className="text-xs text-primary font-medium">
+                      📍 Paso 3 — Marca las esquinas del bloque en el mapa, en orden. Necesitas al menos 3 puntos.
+                    </p>
+
+                    <p className="text-xs text-muted-foreground">
+                      Esquinas marcadas: <b>{drawing.length}</b>
+                    </p>
+
+                    <div className="space-y-1">
+                      <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        O pega coordenadas de Google Maps
+                      </Label>
+
+                      <PasteCoordInput
+                        buttonLabel="Añadir esquina"
+                        onAdd={(lat, lng) => setDrawing((prev) => [...prev, { lat, lng }])}
+                      />
+                    </div>
+
+                    {drawing.length > 0 && (
+                      <ul className="max-h-32 overflow-auto rounded border bg-muted/30 p-1.5 text-[11px] space-y-0.5">
+                        {drawing.map((p, i) => (
+                          <li key={i} className="flex items-center justify-between gap-1">
+                            <span className="font-mono">
+                              {i + 1}. {p.lat.toFixed(6)}, {p.lng.toFixed(6)}
+                            </span>
+
+                            <button
+                              type="button"
+                              className="text-destructive hover:underline"
+                              onClick={() =>
+                                setDrawing((prev) => prev.filter((_, j) => j !== i))
+                              }
+                            >
+                              ✕
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        onClick={saveBuilding}
+                        disabled={drawing.length < 3}
+                        className="flex-1"
+                      >
+                        <Save className="h-3 w-3 mr-1" />
+                        Guardar bloque
+                      </Button>
+
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setDrawing([])}
+                      >
+                        Limpiar
+                      </Button>
+                    </div>
                   </Card>
                 )}
 
@@ -948,7 +1104,7 @@ export default function Admin() {
 
 function toolLabel(t: DrawTool) {
   return ({
-    "building": "Crear bloque (1 clic)",
+    "building": "Crear bloque (marcar esquinas)",
     "parking": "Crear parqueo (1 clic)",
     "entrance": "Crear entrada de bloque (1 clic)",
     "campus-entry": "Crear acceso al campus (1 clic)",
@@ -1042,18 +1198,186 @@ function EditPanel({ target, setTarget, onSave, onDelete, originalStatus, reason
         </Field>
       )}
 
-      {t.kind === "building" && (
-        <>
-          <Field label="Nombre"><Input value={(t.data as MapBuilding).name} onChange={(e) => update({ name: e.target.value })} /></Field>
-          <Field label="Código"><Input value={(t.data as MapBuilding).code ?? ""} onChange={(e) => update({ code: e.target.value })} /></Field>
-          <Field label="Pisos"><Input type="number" min={1} value={(t.data as MapBuilding).floors_count}
-            onChange={(e) => update({ floors_count: +e.target.value || 1 })} /></Field>
-          <Field label="Descripción"><Textarea rows={2} value={(t.data as MapBuilding).description ?? ""}
-            onChange={(e) => update({ description: e.target.value })} /></Field>
-          <CoordFields lat={(t.data as MapBuilding).centroid_lat} lng={(t.data as MapBuilding).centroid_lng}
-            onChange={(lat, lng) => update({ centroid_lat: lat, centroid_lng: lng })} />
-        </>
-      )}
+      {t.kind === "building" && (() => {
+        const building = t.data as MapBuilding;
+        const vertices = pointsFromPolygon((building as any).geom);
+
+        const setVertices = (next: { lat: number; lng: number }[]) => {
+          if (next.length >= 3) {
+            const centroid = centroidFromPoints(next);
+
+            update({
+              geom: polygonFromPoints(next),
+              centroid_lat: centroid.lat,
+              centroid_lng: centroid.lng,
+            });
+          } else {
+            update({
+              geom: {
+                type: "Polygon",
+                coordinates: [
+                  next.length
+                    ? [...next, next[0]].map((p) => [p.lng, p.lat])
+                    : [],
+                ],
+              },
+            });
+          }
+        };
+
+        const updateVertex = (i: number, lat: number, lng: number) => {
+          const next = vertices.slice();
+          next[i] = { lat, lng };
+          setVertices(next);
+        };
+
+        const removeVertex = (i: number) => {
+          if (vertices.length <= 3) {
+            toast({
+              title: "No puedes quitar más esquinas",
+              description: "Un bloque necesita al menos 3 puntos.",
+              variant: "destructive",
+            });
+            return;
+          }
+
+          setVertices(vertices.filter((_, idx) => idx !== i));
+        };
+
+        const addVertex = (lat: number, lng: number) => {
+          setVertices([...vertices, { lat, lng }]);
+        };
+
+        const moveVertex = (i: number, dir: -1 | 1) => {
+          const j = i + dir;
+
+          if (j < 0 || j >= vertices.length) return;
+
+          const next = vertices.slice();
+          [next[i], next[j]] = [next[j], next[i]];
+          setVertices(next);
+        };
+
+        return (
+          <>
+            <Field label="Nombre">
+              <Input
+                value={building.name}
+                onChange={(e) => update({ name: e.target.value })}
+              />
+            </Field>
+
+            <Field label="Código">
+              <Input
+                value={building.code ?? ""}
+                onChange={(e) => update({ code: e.target.value })}
+              />
+            </Field>
+
+            <Field label="Pisos">
+              <Input
+                type="number"
+                min={1}
+                value={building.floors_count}
+                onChange={(e) => update({ floors_count: +e.target.value || 1 })}
+              />
+            </Field>
+
+            <Field label="Descripción">
+              <Textarea
+                rows={2}
+                value={building.description ?? ""}
+                onChange={(e) => update({ description: e.target.value })}
+              />
+            </Field>
+
+            <div className="space-y-2 border-t pt-2">
+              <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                Esquinas del bloque ({vertices.length})
+              </Label>
+
+              <p className="text-[11px] text-muted-foreground">
+                Edita las coordenadas en orden alrededor del bloque. El sistema cerrará el polígono automáticamente.
+              </p>
+
+              <ul className="max-h-72 overflow-auto rounded border bg-muted/30 p-1.5 space-y-1">
+                {vertices.map((v, i) => (
+                  <li key={i} className="rounded border bg-background p-1.5 space-y-1">
+                    <div className="flex items-center justify-between text-[11px] font-semibold text-muted-foreground">
+                      <span className="flex items-center gap-1">
+                        <GripVertical className="h-3 w-3" />
+                        Esquina {i + 1}
+                      </span>
+
+                      <div className="flex gap-0.5">
+                        <button
+                          type="button"
+                          className="rounded px-1 hover:bg-muted"
+                          onClick={() => moveVertex(i, -1)}
+                          disabled={i === 0}
+                          title="Subir"
+                        >
+                          <ArrowUp className="h-3 w-3" />
+                        </button>
+
+                        <button
+                          type="button"
+                          className="rounded px-1 hover:bg-muted"
+                          onClick={() => moveVertex(i, 1)}
+                          disabled={i === vertices.length - 1}
+                          title="Bajar"
+                        >
+                          <ArrowDown className="h-3 w-3" />
+                        </button>
+
+                        <button
+                          type="button"
+                          className="rounded px-1 text-destructive hover:bg-destructive/10"
+                          onClick={() => removeVertex(i)}
+                          title="Eliminar"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-1">
+                      <Input
+                        type="number"
+                        step="0.000001"
+                        value={v.lat}
+                        onChange={(e) => updateVertex(i, +e.target.value, v.lng)}
+                        className="h-7 text-[11px] font-mono"
+                      />
+
+                      <Input
+                        type="number"
+                        step="0.000001"
+                        value={v.lng}
+                        onChange={(e) => updateVertex(i, v.lat, +e.target.value)}
+                        className="h-7 text-[11px] font-mono"
+                      />
+                    </div>
+
+                    <PasteCoordInput
+                      buttonLabel="Pegar"
+                      onAdd={(lat, lng) => updateVertex(i, lat, lng)}
+                    />
+                  </li>
+                ))}
+              </ul>
+
+              <div className="space-y-1">
+                <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                  Añadir nueva esquina
+                </Label>
+
+                <PasteCoordInput buttonLabel="Añadir esquina" onAdd={addVertex} />
+              </div>
+            </div>
+          </>
+        );
+      })()}
 
       {t.kind === "parking" && (
         <>

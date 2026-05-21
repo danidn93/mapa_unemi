@@ -17,13 +17,13 @@ interface Props {
 const FACULTIES = [
   "Ciencias Sociales, Educación Comercial y Derecho",
   "Ciencias de la Ingeniería",
-  "Ciencias de la Salud y Ambiente",
+  "Ciencias de la Salud y Servicios Sociales",
   "Ciencias de la Educación",
   "Posgrado",
 ];
 
 type DocType = "cedula" | "pasaporte";
-type UserType = "estudiante" | "docente" | "administrativo";
+type UserType = "estudiante" | "docente" | "administrativo" | "trabajador";
 
 export function SignUpModal({ open, onClose }: Props) {
   const { toast } = useToast();
