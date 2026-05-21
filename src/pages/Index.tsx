@@ -58,7 +58,8 @@ import {
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 
-const ARRIVAL_THRESHOLD_M = 25;
+const SNAP_TO_ROUTE_MAX_M = 35;
+const ARRIVAL_POINT_THRESHOLD_M = 6;
 
 function bearingBetween(a: LatLng, b: LatLng) {
   const toRad = (v: number) => (v * Math.PI) / 180;
@@ -209,15 +210,42 @@ function nearestPointOnRoute(
   let nearest = route.coords[0];
   let best = Infinity;
 
-  for (const p of route.coords) {
-    const d = haversine(user, p);
+  for (let i = 0; i < route.coords.length - 1; i++) {
+    const a = route.coords[i];
+    const b = route.coords[i + 1];
+
+    const ax = a.lat;
+    const ay = a.lng;
+    const bx = b.lat;
+    const by = b.lng;
+    const px = user.lat;
+    const py = user.lng;
+
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+
+    if (len2 === 0) continue;
+
+    const t = Math.max(
+      0,
+      Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2),
+    );
+
+    const projected = {
+      lat: ax + t * dx,
+      lng: ay + t * dy,
+    };
+
+    const d = haversine(user, projected);
+
     if (d < best) {
       best = d;
-      nearest = p;
+      nearest = projected;
     }
   }
 
-  return best <= 18 ? nearest : user;
+  return best <= SNAP_TO_ROUTE_MAX_M ? nearest : user;
 }
 
 export default function Index() {
@@ -849,26 +877,6 @@ export default function Index() {
   const routeForRender = routeWithStreetNames ?? routeWithBuildingExit ?? buildingRoute;
 
   useEffect(() => {
-    if (!arrival || !position) return;
-
-    const last = arrival.exteriorRoute.coords[arrival.exteriorRoute.coords.length - 1];
-
-    if (haversine(position, last) < ARRIVAL_THRESHOLD_M) {
-      if (!arrived) {
-        setArrived(true);
-        setShowArrivalModal(true);
-
-        if (voice) {
-          speak(
-            `Hemos llegado a ${activeDestinationName}. Ruta finalizada.`,
-            { force: true }
-          );
-        }
-      }
-    }
-  }, [position, arrival, arrived, voice]);
-
-  useEffect(() => {
     if (!voice || arrived || !routeForRender || navMode !== "navigating") return;
     if (!destination && !destBuilding && !destLandmark && !destParking && !exitMode) return;
 
@@ -983,18 +991,20 @@ export default function Index() {
     setDestBuilding(null);
     setDestLandmark(null);
     setDestParking(null);
-
     setExitMode(false);
+
     setArrived(false);
     setStepIndex(0);
-
     setNavMode("preview");
+
+    setFitRouteToken(0);
+    setRecenterToken((t) => t + 1);
 
     stopSpeaking();
 
     toast({
-        title:"✅ Ruta finalizada",
-        description:"Has llegado a tu destino."
+      title: "✅ Ruta finalizada",
+      description: "Se limpió la ruta del mapa.",
     });
   };
 
@@ -1126,6 +1136,37 @@ export default function Index() {
     [position, routeForRender, isNavigating],
   );
 
+    useEffect(() => {
+    if (
+      arrived ||
+      navMode !== "navigating" ||
+      !routeForRender?.coords?.length ||
+      !snappedUser
+    ) {
+      return;
+    }
+
+    const finalPoint = routeForRender.coords[routeForRender.coords.length - 1];
+    const distanceToFinalPoint = haversine(snappedUser, finalPoint);
+
+    if (distanceToFinalPoint <= ARRIVAL_POINT_THRESHOLD_M) {
+      setArrived(true);
+      setShowArrivalModal(true);
+      setNavMode("preview");
+
+      if (voice) {
+        speak(`Hemos llegado a ${activeDestinationName}.`, { force: true });
+      }
+    }
+  }, [
+    arrived,
+    navMode,
+    routeForRender,
+    snappedUser,
+    voice,
+    activeDestinationName,
+  ]);
+  
   const routeBearing = useMemo(() => {
     if (!routeForRender?.coords?.length) return heading ?? 0;
 
