@@ -1166,7 +1166,7 @@ export default function Index() {
     voice,
     activeDestinationName,
   ]);
-  
+
   const routeBearing = useMemo(() => {
     if (!routeForRender?.coords?.length) return heading ?? 0;
 
@@ -1348,92 +1348,94 @@ export default function Index() {
         className="absolute inset-0"
       />
 
-      <div className="absolute right-3 top-3 z-[1200] pointer-events-auto">
-        <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
-          <SheetTrigger asChild>
-            <Button
-              size="icon"
-              variant="default"
-              className="h-14 w-14 rounded-2xl bg-primary text-primary-foreground shadow-xl"
-              title="Abrir menú del mapa"
-              aria-label="Abrir menú del mapa"
-            >
-              <Menu className="h-7 w-7" />
-            </Button>
-          </SheetTrigger>
-
-          <SheetContent
-            side="right"
-            className="w-[310px] sm:w-[360px] pt-[calc(env(safe-area-inset-top)+1.5rem)]"
-          >
-            <SheetHeader>
-              <SheetTitle>Mapa UNEMI</SheetTitle>
-            </SheetHeader>
-
-            <div className="mt-6 space-y-3">
-              <Button variant="outline" className="w-full justify-start" onClick={shareMyLocation}>
-                <Share2 className="mr-2 h-4 w-4" />
-                Compartir ubicación
+      {!hasActiveRoute && (
+        <div className="absolute right-3 top-3 z-[1200] pointer-events-auto">
+          <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
+            <SheetTrigger asChild>
+              <Button
+                size="icon"
+                variant="default"
+                className="h-14 w-14 rounded-2xl bg-primary text-primary-foreground shadow-xl"
+                title="Abrir menú del mapa"
+                aria-label="Abrir menú del mapa"
+              >
+                <Menu className="h-7 w-7" />
               </Button>
+            </SheetTrigger>
 
-              {hasSession && isStudent && (
-                <Button
-                  className="w-full justify-start"
-                  onClick={goToMyClass}
-                  disabled={loadingClassRoute || loading}
-                >
-                  {loadingClassRoute ? (
-                    <Search className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <School className="mr-2 h-4 w-4" />
-                  )}
-                  Ir a mi clase
+            <SheetContent
+              side="right"
+              className="w-[310px] sm:w-[360px] pt-[calc(env(safe-area-inset-top)+1.5rem)]"
+            >
+              <SheetHeader>
+                <SheetTitle>Mapa UNEMI</SheetTitle>
+              </SheetHeader>
+
+              <div className="mt-6 space-y-3">
+                <Button variant="outline" className="w-full justify-start" onClick={shareMyLocation}>
+                  <Share2 className="mr-2 h-4 w-4" />
+                  Compartir ubicación
                 </Button>
-              )}
 
-              {!isInstalledPwa && installPrompt && (
-                <Button variant="outline" className="w-full justify-start" onClick={installApp}>
-                  <Download className="mr-2 h-4 w-4" />
-                  Instalar aplicación
-                </Button>
-              )}
-
-              {hasSession && canAccessAdmin && (
-                <Link to="/admin">
-                  <Button variant="outline" className="w-full justify-start">
-                    <LayoutDashboard className="mr-2 h-4 w-4" />
-                    Panel administrativo
+                {hasSession && isStudent && (
+                  <Button
+                    className="w-full justify-start"
+                    onClick={goToMyClass}
+                    disabled={loadingClassRoute || loading}
+                  >
+                    {loadingClassRoute ? (
+                      <Search className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <School className="mr-2 h-4 w-4" />
+                    )}
+                    Ir a mi clase
                   </Button>
-                </Link>
-              )}
+                )}
 
-              {!hasSession && (
-                <Link to="/auth">
-                  <Button variant="outline" className="w-full justify-start">
+                {!isInstalledPwa && installPrompt && (
+                  <Button variant="outline" className="w-full justify-start" onClick={installApp}>
+                    <Download className="mr-2 h-4 w-4" />
+                    Instalar aplicación
+                  </Button>
+                )}
+
+                {hasSession && canAccessAdmin && (
+                  <Link to="/admin">
+                    <Button variant="outline" className="w-full justify-start">
+                      <LayoutDashboard className="mr-2 h-4 w-4" />
+                      Panel administrativo
+                    </Button>
+                  </Link>
+                )}
+
+                {!hasSession && (
+                  <Link to="/auth">
+                    <Button variant="outline" className="w-full justify-start">
+                      <LogIn className="mr-2 h-4 w-4" />
+                      Iniciar sesión
+                    </Button>
+                  </Link>
+                )}
+
+                {hasSession && !canAccessAdmin && (
+                  <Button
+                    variant="destructive"
+                    className="w-full justify-start"
+                    onClick={async () => {
+                      if (window.confirm("¿Cerrar sesión?")) {
+                        await supabase.auth.signOut();
+                      }
+                    }}
+                  >
                     <LogIn className="mr-2 h-4 w-4" />
-                    Iniciar sesión
+                    Cerrar sesión
                   </Button>
-                </Link>
-              )}
-
-              {hasSession && !canAccessAdmin && (
-                <Button
-                  variant="destructive"
-                  className="w-full justify-start"
-                  onClick={async () => {
-                    if (window.confirm("¿Cerrar sesión?")) {
-                      await supabase.auth.signOut();
-                    }
-                  }}
-                >
-                  <LogIn className="mr-2 h-4 w-4" />
-                  Cerrar sesión
-                </Button>
-              )}
-            </div>
-          </SheetContent>
-        </Sheet>
-      </div>
+                )}
+              </div>
+            </SheetContent>
+          </Sheet>
+        </div>
+      )}
 
       {position && (
         <div className="absolute right-3 bottom-24 z-[1100] flex flex-col items-end gap-2 sm:bottom-28">
