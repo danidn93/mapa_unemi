@@ -16,6 +16,13 @@ import {
   resolveOriginFromBuildingExit,
 } from "@/lib/arrival";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import {
   Sheet,
   SheetContent,
   SheetHeader,
@@ -245,6 +252,7 @@ export default function Index() {
   const [mode, setMode] = useState<AccessMode>("pedestrian");
   const [voice, setVoice] = useState(true);
   const [arrived, setArrived] = useState(false);
+  const [showArrivalModal, setShowArrivalModal] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const [hasSession, setHasSession] = useState(false);
   const [sharedPin, setSharedPin] = useState<LatLng | null>(null);
@@ -255,6 +263,7 @@ export default function Index() {
   const [role, setRole] = useState<string>("public");
   const [destParking, setDestParking] = useState<any | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [isInstalledPwa, setIsInstalledPwa] = useState(false);
 
   const [profile, setProfile] = useState<{
     id: string;
@@ -278,6 +287,23 @@ export default function Index() {
 
     window.addEventListener("beforeinstallprompt", onPrompt);
     return () => window.removeEventListener("beforeinstallprompt", onPrompt);
+  }, []);
+
+  useEffect(() => {
+    const checkInstalled = () => {
+      const standalone =
+        window.matchMedia("(display-mode: standalone)").matches ||
+        (window.navigator as any).standalone === true;
+
+      setIsInstalledPwa(standalone);
+    };
+
+    checkInstalled();
+
+    const media = window.matchMedia("(display-mode: standalone)");
+    media.addEventListener?.("change", checkInstalled);
+
+    return () => media.removeEventListener?.("change", checkInstalled);
   }, []);
 
   useEffect(() => {
@@ -720,7 +746,8 @@ export default function Index() {
 
     if (
       !buildingDoorOriginInfo.isInsideBuilding ||
-      !buildingDoorOriginInfo.forcedDoor
+      !buildingDoorOriginInfo.forcedDoor ||
+      !position
     ) {
       return buildingRoute;
     }
@@ -728,17 +755,44 @@ export default function Index() {
     const door = buildingDoorOriginInfo.forcedDoor;
     const blockName = buildingDoorOriginInfo.building?.name ?? "el bloque actual";
 
+    const userPoint = {
+      lat: position.lat,
+      lng: position.lng,
+    };
+
+    const doorPoint = {
+      lat: door.lat,
+      lng: door.lng,
+    };
+
+    const firstRoutePoint = buildingRoute.coords?.[0];
+
+    const coords = [
+      userPoint,
+      doorPoint,
+      ...(firstRoutePoint && haversine(doorPoint, firstRoutePoint) < 3
+        ? buildingRoute.coords.slice(1)
+        : buildingRoute.coords),
+    ];
+
+    const extraDistance = haversine(userPoint, doorPoint);
+
     const exitStep = {
-      instruction: `Sal de ${blockName} por la puerta de ingreso habilitada más cercana.`,
+      instruction: `Dirígete desde tu ubicación actual hasta la puerta habilitada más cercana de ${blockName}.`,
       lat: door.lat,
       lng: door.lng,
     };
 
     return {
       ...buildingRoute,
+      coords,
+      distance: buildingRoute.distance + extraDistance,
+      duration:
+        buildingRoute.duration +
+        extraDistance / (mode === "vehicle" ? 8 : 1.4),
       steps: [exitStep, ...buildingRoute.steps],
     };
-  }, [buildingRoute, buildingDoorOriginInfo]);
+  }, [buildingRoute, buildingDoorOriginInfo, position, mode]);
 
   const routeWithStreetNames = useMemo<RouteResult | null>(() => {
     const baseRoute = routeWithBuildingExit ?? buildingRoute;
@@ -802,11 +856,13 @@ export default function Index() {
     if (haversine(position, last) < ARRIVAL_THRESHOLD_M) {
       if (!arrived) {
         setArrived(true);
+        setShowArrivalModal(true);
 
         if (voice) {
-          speak(`${arrival.arrivalInstruction} ${arrival.indoorInstruction ?? ""}`, {
-            force: true,
-          });
+          speak(
+            `Hemos llegado a ${activeDestinationName}. Ruta finalizada.`,
+            { force: true }
+          );
         }
       }
     }
@@ -918,6 +974,28 @@ export default function Index() {
     resetRoute();
     stopSpeaking();
     setDestParking(null);
+  };
+
+  const finishRoute = () => {
+    setShowArrivalModal(false);
+
+    setDestination(null);
+    setDestBuilding(null);
+    setDestLandmark(null);
+    setDestParking(null);
+
+    setExitMode(false);
+    setArrived(false);
+    setStepIndex(0);
+
+    setNavMode("preview");
+
+    stopSpeaking();
+
+    toast({
+        title:"✅ Ruta finalizada",
+        description:"Has llegado a tu destino."
+    });
   };
 
   const handleStartNavigation = () => {
@@ -1272,10 +1350,12 @@ export default function Index() {
                 </Button>
               )}
 
-              <Button variant="outline" className="w-full justify-start" onClick={installApp}>
-                <Download className="mr-2 h-4 w-4" />
-                Instalar aplicación
-              </Button>
+              {!isInstalledPwa && installPrompt && (
+                <Button variant="outline" className="w-full justify-start" onClick={installApp}>
+                  <Download className="mr-2 h-4 w-4" />
+                  Instalar aplicación
+                </Button>
+              )}
 
               {hasSession && canAccessAdmin && (
                 <Link to="/admin">
@@ -1561,6 +1641,56 @@ export default function Index() {
           </Link>
         </div>
       )}
+
+      <Dialog
+        open={showArrivalModal}
+        onOpenChange={setShowArrivalModal}
+      >
+        <DialogContent className="max-w-sm rounded-3xl">
+
+          <DialogHeader>
+
+            <div className="mx-auto mb-4 text-6xl">
+              🎉
+            </div>
+
+            <DialogTitle className="text-center text-2xl">
+              Hemos llegado
+            </DialogTitle>
+
+            <DialogDescription className="text-center">
+
+              Llegaste a:
+
+              <div className="mt-2 font-bold text-lg text-primary">
+                {activeDestinationName}
+              </div>
+
+            </DialogDescription>
+
+          </DialogHeader>
+
+          <div className="space-y-2">
+
+            <Button
+              className="w-full"
+              onClick={finishRoute}
+            >
+              Finalizar ruta
+            </Button>
+
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={()=>setShowArrivalModal(false)}
+            >
+              Ver destino
+            </Button>
+
+          </div>
+
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
