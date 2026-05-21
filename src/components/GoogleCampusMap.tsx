@@ -408,7 +408,7 @@ export function GoogleCampusMap({
       const m = new libs.AdvancedMarkerElement({
         map,
         position: { lat: b.centroid_lat, lng: b.centroid_lng },
-        content: buildingMarkerEl(b.code ? `Bloque ${b.code}` : b.name),
+        content: buildingMarkerEl(b.code ? `${b.code}` : b.name),
         title: b.name,
       });
       m.addListener("click", () => buildingClickRef.current?.(b));

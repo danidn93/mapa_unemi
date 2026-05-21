@@ -1718,18 +1718,30 @@ function RoomsManager({ buildingId, floors, rooms, onChanged }: {
   };
   const saveRoom = async () => {
     if (!editing) return;
+
     const { error } = await db.from("map_rooms").update({
-      name: editing.name, code: editing.code || null,
+      name: editing.name,
+      code: editing.code || null,
       floor_id: editing.floor_id || null,
       directions: editing.directions || null,
       target_audience: editing.target_audience ?? "public",
     }).eq("id", editing.id);
-    if (error) return toast({ title: "Error", description: error.message, variant: "destructive" });
+
+    if (error) {
+      return toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
+
     toast({ title: "Aula actualizada" });
-    const snap = { id: editing.id as string, name: editing.name as string, code: (editing.code || null) as string | null, audience: (editing.target_audience ?? "public") as string };
     setEditing(null);
     onChanged();
-    notifyRoom("actualizada", snap.id, snap.name, snap.code, snap.audience);
+
+    // IMPORTANTE:
+    // No enviar push ni correo por cambios de nombre, código, piso,
+    // audiencia o indicaciones del aula.
   };
   const delRoom = async (id: string) => {
     if (!confirm("¿Eliminar aula?")) return;
