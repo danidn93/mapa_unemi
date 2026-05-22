@@ -271,6 +271,9 @@ export default function Index() {
     enableCompass,
   } = useGeolocation();
 
+  const [lockedNavigationRoute, setLockedNavigationRoute] =
+    useState<RouteResult | null>(null);
+
   const [destination, setDestination] = useState<MapRoom | null>(null);
   const [destBuilding, setDestBuilding] = useState<MapBuilding | null>(null);
   const [destLandmark, setDestLandmark] =
@@ -874,7 +877,12 @@ export default function Index() {
     };
   }, [buildingRoute, routeWithBuildingExit, outside, streetApproach]);
 
-  const routeForRender = routeWithStreetNames ?? routeWithBuildingExit ?? buildingRoute;
+  const liveRoute = routeWithStreetNames ?? routeWithBuildingExit ?? buildingRoute;
+
+  const routeForRender =
+    navMode === "navigating" && lockedNavigationRoute
+      ? lockedNavigationRoute
+      : liveRoute;
 
   useEffect(() => {
     if (!voice || arrived || !routeForRender || navMode !== "navigating") return;
@@ -932,6 +940,7 @@ export default function Index() {
     setArrived(false);
     setStepIndex(0);
     setNavMode("preview");
+    setLockedNavigationRoute(null);
   };
 
   const handleSelectRoom = (r: MapRoom) => {
@@ -1002,6 +1011,8 @@ export default function Index() {
 
     stopSpeaking();
 
+    setLockedNavigationRoute(null);
+
     toast({
       title: "✅ Ruta finalizada",
       description: "Se limpió la ruta del mapa.",
@@ -1009,6 +1020,10 @@ export default function Index() {
   };
 
   const handleStartNavigation = () => {
+    if (liveRoute?.coords?.length) {
+      setLockedNavigationRoute(liveRoute);
+    }
+
     setNavMode("navigating");
     setRecenterToken((t) => t + 1);
   };
@@ -1136,7 +1151,7 @@ export default function Index() {
     [position, routeForRender, isNavigating],
   );
 
-    useEffect(() => {
+  useEffect(() => {
     if (
       arrived ||
       navMode !== "navigating" ||
@@ -1340,6 +1355,7 @@ export default function Index() {
         userBearing={isNavigating && !arrived ? routeBearing : heading}
         followUser={isNavigating && !arrived}
         rotateWithHeading={isNavigating && !arrived}
+        isNavigating={isNavigating && !arrived}
         route={routeForRender}
         sharedPin={sharedPin}
         onBuildingClick={handleSelectBuilding}
