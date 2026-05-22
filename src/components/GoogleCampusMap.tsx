@@ -349,9 +349,7 @@ export function GoogleCampusMap({
     if (user) bounds.extend({ lat: user.lat, lng: user.lng });
     map.fitBounds(bounds, 80);
 
-    if (!rotateWithHeading) {
-      setMapHeading(map, 0);
-    }
+    // No reseteamos el heading para permitir giro manual con dedos.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fitRouteToken, rotateWithHeading]);
 
@@ -362,7 +360,6 @@ export function GoogleCampusMap({
     if (!map) return;
 
     if (!rotateWithHeading) {
-      setMapHeading(map, 0);
       return;
     }
 
