@@ -1352,9 +1352,9 @@ export default function Index() {
         user={snappedUser}
         userAccuracy={accuracy}
         userMode={mode}
-        userBearing={isNavigating && !arrived ? routeBearing : heading}
+        userBearing={heading}
         followUser={isNavigating && !arrived}
-        rotateWithHeading={isNavigating && !arrived}
+        rotateWithHeading={false}
         isNavigating={isNavigating && !arrived}
         route={routeForRender}
         sharedPin={sharedPin}
@@ -1701,53 +1701,17 @@ export default function Index() {
         </div>
       )}
 
-      <Dialog
-        open={showArrivalModal}
-        onOpenChange={setShowArrivalModal}
-      >
-        <DialogContent className="max-w-sm rounded-3xl">
-
+      <Dialog open={showArrivalModal} onOpenChange={setShowArrivalModal}>
+        <DialogContent className="max-w-xs rounded-3xl">
           <DialogHeader>
-
-            <div className="mx-auto mb-4 text-6xl">
-              🎉
-            </div>
-
-            <DialogTitle className="text-center text-2xl">
-              Hemos llegado
+            <DialogTitle className="text-center text-xl">
+              Has llegado a tu destino
             </DialogTitle>
-
-            <DialogDescription className="text-center">
-
-              Llegaste a:
-
-              <div className="mt-2 font-bold text-lg text-primary">
-                {activeDestinationName}
-              </div>
-
-            </DialogDescription>
-
           </DialogHeader>
 
-          <div className="space-y-2">
-
-            <Button
-              className="w-full"
-              onClick={finishRoute}
-            >
-              Finalizar ruta
-            </Button>
-
-            <Button
-              variant="outline"
-              className="w-full"
-              onClick={()=>setShowArrivalModal(false)}
-            >
-              Ver destino
-            </Button>
-
-          </div>
-
+          <Button className="w-full" onClick={finishRoute}>
+            Finalizar
+          </Button>
         </DialogContent>
       </Dialog>
     </div>
