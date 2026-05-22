@@ -276,9 +276,11 @@ export function GoogleCampusMap({
           streetViewControl: false,
           fullscreenControl: false,
           mapTypeControl: false,
-          rotateControl: false,
+          rotateControl: true,
           tilt: 0,
           gestureHandling: "greedy",
+          headingInteractionEnabled: true,
+          tiltInteractionEnabled: false,
           clickableIcons: false,
         });
         mapRef.current = map;
