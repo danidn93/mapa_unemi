@@ -1353,7 +1353,7 @@ export default function Index() {
         userAccuracy={accuracy}
         userMode={mode}
         userBearing={heading}
-        followUser={isNavigating && !arrived}
+        followUser={false}
         rotateWithHeading={false}
         isNavigating={isNavigating && !arrived}
         route={routeForRender}
