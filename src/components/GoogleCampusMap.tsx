@@ -215,6 +215,7 @@ interface Props {
   /** Cuando true, el mapa rota para mantener "arriba = adelante" (modo navegación activa). */
   rotateWithHeading?: boolean;
   route?: RouteResult | null;
+  isNavigating?: boolean;
   sharedPin?: LatLng | null;
   onBuildingClick?: (b: MapBuilding) => void;
   /** Disparado cuando el usuario interactúa con el mapa (drag/zoom). */
@@ -230,7 +231,7 @@ export function GoogleCampusMap({
   buildings, entrances, campusEntrances = [], parkings, paths, landmarks = [],
   user, userAccuracy = null, userMode = "pedestrian", userBearing = null, followUser = false,
   rotateWithHeading = false,
-  route, sharedPin, onBuildingClick, onUserInteract, recenterToken, fitRouteToken,
+  route, isNavigating = false, sharedPin, onBuildingClick, onUserInteract, recenterToken, fitRouteToken,
   className,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -506,7 +507,7 @@ export function GoogleCampusMap({
     // Durante una ruta activa, el punto visual del usuario debe coincidir con
     // el primer punto REAL que se está dibujando en la polilínea. Así el
     // tigrillo, el orbe y el inicio de la ruta no se separan visualmente.
-    const visualUser = route?.coords?.[0] ?? user;
+    const visualUser = user;
     if (!userMarkerRef.current) {
       userMarkerRef.current = createUserLocationOverlay(visualUser, userMode);
       userMarkerRef.current.setMap(map);
@@ -541,7 +542,7 @@ export function GoogleCampusMap({
     } else if (accuracyCircleRef.current) {
       accuracyCircleRef.current.setMap(null);
     }
-  }, [ready, user, userMode, userAccuracy, route]);
+  }, [ready, user, userMode, userAccuracy]);
 
   // Shared pin
   useEffect(() => {
@@ -576,12 +577,12 @@ export function GoogleCampusMap({
     // Solo encuadramos automáticamente la primera vez que aparece la ruta
     // (y el usuario aún no ha movido el mapa). Posteriores re-encuadres se
     // disparan desde el padre vía fitRouteToken.
-    if (!userMovedRef.current) {
+    if (!isNavigating && !userMovedRef.current) {
       const bounds = new libs.LatLngBounds();
       path.forEach((p) => bounds.extend(p));
       map.fitBounds(bounds, 60);
     }
-  }, [ready, route]);
+  }, [ready, route, isNavigating]);
 
   return <div ref={containerRef} className={className} style={{ width: "100%", height: "100%", position: "relative" }} />;
 }
