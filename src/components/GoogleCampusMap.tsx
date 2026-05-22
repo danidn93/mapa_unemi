@@ -573,8 +573,29 @@ export function GoogleCampusMap({
     const path = route.coords.map((c) => ({ lat: c.lat, lng: c.lng }));
     routePolyRef.current = new libs.Polyline({
       path,
-      strokeColor: "#ff7a1a", strokeOpacity: 0.95, strokeWeight: 6,
-      map, clickable: false,
+
+      // verde navegación estilo Google Maps
+      strokeColor: "#16a34a",
+
+      strokeOpacity: 0.95,
+      strokeWeight: 7,
+
+      map,
+      clickable: false,
+
+      icons: [
+        {
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 3,
+            fillColor: "#ffffff",
+            fillOpacity: 1,
+            strokeOpacity: 0,
+          },
+          offset: "0",
+          repeat: "18px",
+        },
+      ],
     });
     // Solo encuadramos automáticamente la primera vez que aparece la ruta
     // (y el usuario aún no ha movido el mapa). Posteriores re-encuadres se
